@@ -8,7 +8,7 @@
 	},
 	"id": "nosyarg.frame-window-counter",
 	"name": "Frame Window Counter",
-	"version": "v1.1.0",
+	"version": "v1.2.0",
 	"developer": "nosyarg",
 	"description": "Automatically shows how many 240 FPS frames of leeway every click and release had.",
 	"tags": ["gameplay", "utility", "interface"],
@@ -70,8 +70,8 @@
 		"max-window": {
 			"type": "float",
 			"name": "Max Window (frames)",
-			"description": "Windows larger than this are shown as \"free\". Higher values simulate more ghosts and cost more CPU.",
-			"default": 10.0,
+			"description": "Windows larger than this are shown as \"free\". Higher values run more test players.",
+			"default": 12.0,
 			"min": 2.0,
 			"max": 30.0,
 			"control": { "slider": true, "slider-step": 1.0 }
@@ -79,27 +79,34 @@
 		"resolution": {
 			"type": "float",
 			"name": "Precision (frames)",
-			"description": "How finely timings are tested. 0.25 = quarter frames (most precise, most CPU), 0.5 = half frames, 1 = whole frames.",
-			"default": 0.5,
-			"min": 0.25,
+			"description": "Smallest timing step tested, in 240 FPS frames. 0.25 tells 0-1 (needs more than 240 FPS) apart from 1-2 reliably. Bigger windows are always tested in coarser steps.",
+			"default": 0.25,
+			"min": 0.125,
 			"max": 1.0,
+			"control": { "slider": true, "slider-step": 0.125 }
+		},
+		"check-ahead": {
+			"type": "float",
+			"name": "Check Ahead (seconds)",
+			"description": "How long a shifted input has to keep you alive (with all your later inputs unchanged) to count as working. Test players that end up exactly where you are stop early.",
+			"default": 1.0,
+			"min": 0.25,
+			"max": 3.0,
 			"control": { "slider": true, "slider-step": 0.25 }
 		},
 		"max-ghosts": {
 			"type": "int",
-			"name": "Max Simulated Players",
-			"description": "Limit on hidden test players running at once. Lower this if the mod lags on your device; precision drops automatically when the limit is hit.",
-			"default": 160,
-			"min": 20,
-			"max": 1000
-		},
-		"physics-tps": {
-			"type": "int",
-			"name": "Physics Ticks Per Second",
-			"description": "Vanilla 2.2 runs physics at 240 ticks per second. Only change this if you use a TPS bypass.",
-			"default": 240,
-			"min": 60,
+			"name": "Max Test Players",
+			"description": "Limit on hidden test players running at once. Lower this if the game lags; fewer timings get tested when the limit is hit.",
+			"default": 300,
+			"min": 30,
 			"max": 2000
+		},
+		"show-test-players": {
+			"type": "bool",
+			"name": "Show Test Players (debug)",
+			"description": "Draw the hitboxes of the hidden test players. Green = your timing, blue = earlier, orange = later, white = no input.",
+			"default": false
 		},
 		"report-title": {
 			"type": "title",

@@ -1,4 +1,5 @@
 #include "Tracker.hpp"
+#include "PlayerFields.hpp"
 
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/GJGameLevel.hpp>
@@ -14,35 +15,33 @@ using namespace geode::prelude;
 /*
  * HOW THE WINDOW IS MEASURED
  * --------------------------
- * The same way you would test it by hand with a macro bot, but live:
+ * Like testing a macro: take one input, move it earlier / later, keep every
+ * other input exactly where it was, and see if you still make it.
  *
- * Every physics tick we save a copy of player 1. When you click or release,
- * we spawn invisible "ghost" players from those saved copies. Each ghost does
- * your input a little earlier or later (in 1/2 or 1/4 frame steps) and then
- * runs on Geometry Dash's own collision and player physics, in lockstep with
- * you, through the obstacles in front of you.
+ * Every physics step we save a full copy of player 1's physics state. When
+ * you click or release, invisible test players are spawned from those copies.
+ * Each one does that input shifted by some fraction of a 240 FPS frame and
+ * then runs on Geometry Dash's own player physics and collision code, in
+ * lockstep with you, receiving all of your later inputs at their real times.
  *
- * A ghost's result is final when:
- *   - it dies (that timing fails), or
- *   - it ends up in exactly the same state as you (it made it), or
- *   - you make your next input that matters (it got you to your next click), or
- *   - you go through a portal / the horizon runs out.
+ * A test player's result is final when
+ *   - it dies          -> that timing fails (we remember what killed it)
+ *   - it ends up in exactly the same state as you -> that timing works
+ *   - the check-ahead time runs out while it's still alive -> works
  *
- * So a window is only shown once you've actually passed the obstacle the
- * input was for. The surviving range of timings around your real one is the
- * frame window, counted in 240 FPS frames.
+ * Shifting an input past your previous / next input is not allowed (a macro
+ * can't reorder inputs), so very close inputs limit each other ("click
+ * spacing"). A cube's release moves together with its click.
  *
- * Ghosts don't touch orbs, pads, triggers or coins (that could change the
- * real level). Instead, when a ghost touches an orb / pad that YOU used, it
- * gets the same boost you got.
+ * Everything is measured in 240 FPS frames of real time, whatever FPS, TPS,
+ * time warp or Click Between Frames setting you play with.
  */
 
 namespace fw {
 
-static constexpr float kConvergeY = 0.1f;
 static constexpr float kConvergeX = 0.5f;
-static constexpr double kConvergeVy = 0.1;
-static constexpr double kHorizonSeconds = 1.5;
+static constexpr float kConvergeY = 0.05f;
+static constexpr double kConvergeVy = 0.05;
 
 int RunRecord::effectiveCount() const {
     int n = 0;
@@ -67,19 +66,30 @@ Tracker& Tracker::get() {
 }
 
 // ---------------------------------------------------------------------------
-// settings helpers
+// settings
 
-static int tps() {
-    return static_cast<int>(std::clamp<int64_t>(Mod::get()->getSettingValue<int64_t>("physics-tps"), 60, 2000));
-}
-static double stepFrames() { return 240.0 / tps(); }
-static double maxFrames() { return std::clamp(Mod::get()->getSettingValue<double>("max-window"), 2.0, 60.0); }
-static double resFrames() { return std::clamp(Mod::get()->getSettingValue<double>("resolution"), 0.25, 1.0); }
+static double maxFrames() { return std::clamp(Mod::get()->getSettingValue<double>("max-window"), 2.0, 30.0); }
+static double precision() { return std::clamp(Mod::get()->getSettingValue<double>("resolution"), 0.125, 1.0); }
+static double horizonSeconds() { return std::clamp(Mod::get()->getSettingValue<double>("check-ahead"), 0.25, 3.0); }
 static int ghostCap() {
-    return static_cast<int>(std::clamp<int64_t>(Mod::get()->getSettingValue<int64_t>("max-ghosts"), 20, 1000));
+    return static_cast<int>(std::clamp<int64_t>(Mod::get()->getSettingValue<int64_t>("max-ghosts"), 30, 2000));
 }
-static int snapshotCount() {
-    return static_cast<int>(std::ceil(maxFrames() / stepFrames())) + 4;
+
+// Shifts to test, in 240fps frames. Fine steps where it matters (hard clicks),
+// coarser steps for big windows to keep the number of test players down.
+std::vector<double> Tracker::buildOffsets() const {
+    double p = precision();
+    double mf = maxFrames();
+    std::vector<double> out;
+    double x = 0.0;
+    while (true) {
+        double step = x < 2.0 ? p : x < 4.0 ? std::max(p, 0.5) : x < 8.0 ? std::max(p, 1.0) : std::max(p, 2.0);
+        x += step;
+        if (x > mf + 1e-9) break;
+        out.push_back(x);
+    }
+    if (out.empty() || out.back() < mf - 1e-9) out.push_back(mf);
+    return out;
 }
 
 static int modeKeyOf(PlayerObject* p) {
@@ -101,8 +111,26 @@ static bool overlaps(CCRect const& a, CCRect const& b) {
            a.getMinY() < b.getMaxY() && a.getMaxY() > b.getMinY();
 }
 
+static void resetCollisionLog(PlayerObject* p) {
+    if (p->m_collisionLogTop) p->m_collisionLogTop->removeAllObjects();
+    if (p->m_collisionLogBottom) p->m_collisionLogBottom->removeAllObjects();
+    if (p->m_collisionLogLeft) p->m_collisionLogLeft->removeAllObjects();
+    if (p->m_collisionLogRight) p->m_collisionLogRight->removeAllObjects();
+}
+
+static std::string killerName(GameObject* obj) {
+    if (!obj) return "ground";
+    switch (obj->m_objectType) {
+        case GameObjectType::Hazard: return obj->m_objectRadius > 0.f ? "saw" : "spike";
+        case GameObjectType::AnimatedHazard: return "saw";
+        case GameObjectType::Solid: return "block";
+        case GameObjectType::Slope: return "slope";
+        default: return "object";
+    }
+}
+
 // ---------------------------------------------------------------------------
-// ghost pool
+// test player objects
 
 void Tracker::hidePlayer(PlayerObject* p) {
     p->setVisible(false);
@@ -120,23 +148,32 @@ void Tracker::hidePlayer(PlayerObject* p) {
     if (p->m_waveTrail) p->m_waveTrail->setVisible(false);
 }
 
-PlayerObject* Tracker::acquireGhost(PlayLayer* pl) {
+static PlayerObject* createGhostObj(PlayLayer* pl) {
+    return PlayerObject::create(1, 1, pl, pl, true);
+}
+
+PlayerObject* Tracker::acquireObj(PlayLayer* pl) {
     if (!m_pool.empty()) {
         auto p = m_pool.back();
         m_pool.pop_back();
         return p;
     }
-    auto p = PlayerObject::create(1, 1, pl, pl, true);
+    return newObj(pl);
+}
+
+PlayerObject* Tracker::newObj(PlayLayer* pl) {
+    auto p = createGhostObj(pl);
     if (!p) return nullptr;
     p->retain();
     p->setID("frame-window-ghost"_spr);
     if (pl->m_objectLayer) pl->m_objectLayer->addChild(p);
     hidePlayer(p);
-    m_allGhosts.push_back(p);
+    m_allObjs.push_back(p);
+    m_ghostSet.insert(p);
     return p;
 }
 
-void Tracker::releaseGhost(Ghost& g) {
+void Tracker::releaseObj(Ghost& g) {
     if (g.obj) {
         m_pool.push_back(g.obj);
         g.obj = nullptr;
@@ -144,67 +181,74 @@ void Tracker::releaseGhost(Ghost& g) {
 }
 
 void Tracker::destroyPool() {
-    for (auto p : m_allGhosts) {
+    m_groups.clear();
+    for (auto p : m_allObjs) {
         p->removeFromParentAndCleanup(true);
         p->release();
     }
-    m_allGhosts.clear();
+    m_allObjs.clear();
+    m_ghostSet.clear();
     m_pool.clear();
     m_snaps.clear();
-    m_groups.clear();
-}
-
-bool Tracker::isGhost(PlayerObject* p) const {
-    if (!p) return false;
-    return std::find(m_allGhosts.begin(), m_allGhosts.end(), p) != m_allGhosts.end();
-}
-
-void Tracker::onGhostDeath(PlayerObject* p) {
-    if (m_curGhost && m_curGhost->obj == p && m_curGhost->status == GStatus::Alive) {
-        m_curGhost->status = GStatus::Dead;
-        m_curGhost->deathTick = m_stepTick;
-        m_curGhost->deathX = p->m_position.x;
+    if (m_drawNode) {
+        m_drawNode->removeFromParentAndCleanup(true);
+        m_drawNode->release();
+        m_drawNode = nullptr;
     }
 }
 
-void Tracker::copyState(PlayerObject* dst, PlayerObject* src, bool holding, bool jumpBuffered) {
+void Tracker::copyState(PlayerObject* dst, PlayerObject* src, bool holding) {
     bool wasSim = m_simulating;
     m_simulating = true;
     dst->copyAttributes(src);
-    dst->m_gravityMod = src->m_gravityMod;
-    dst->m_isOnGround = src->m_isOnGround;
-    dst->m_yVelocity = src->m_yVelocity;
-    dst->m_position = src->m_position;
+#define FW_COPY(name) dst->name = src->name;
+    FW_PLAYER_FIELDS(FW_COPY)
+#undef FW_COPY
     dst->setPosition(src->getPosition());
-    dst->m_isUpsideDown = src->m_isUpsideDown;
     dst->m_isDead = false;
-    if (holding) dst->pushButton(PlayerButton::Jump);
-    else dst->releaseButton(PlayerButton::Jump);
-    dst->m_jumpBuffered = jumpBuffered;
+    dst->m_ignoreDamage = false; // never inherit noclip
+    dst->m_holdingButtons[1] = holding;
     m_simulating = wasSim;
 }
 
-Tracker::RealState Tracker::readState(PlayerObject* p, bool holding) const {
-    RealState s;
-    s.x = p->m_position.x;
-    s.y = p->m_position.y;
-    s.vy = p->m_yVelocity;
-    s.onGround = p->m_isOnGround;
-    s.holding = holding;
-    s.modeKey = modeKeyOf(p);
-    s.speed = p->m_playerSpeed;
-    s.size = p->m_vehicleSize;
-    return s;
+Tracker::Snapshot* Tracker::snapshotAt(int tick) {
+    if (m_snaps.empty() || tick < 0) return nullptr;
+    auto& s = m_snaps[tick % m_snaps.size()];
+    return s.tick == tick ? &s : nullptr;
 }
 
 int Tracker::liveGhostCount() const {
     int n = 0;
     for (auto const& grp : m_groups) {
-        for (auto const& g : grp.ghosts) {
-            if (g.obj) ++n;
-        }
+        auto count = [&](Ghost const& g) { if (g.obj) ++n; };
+        count(grp.control);
+        count(grp.baseline);
+        for (auto const& g : grp.early) count(g);
+        for (auto const& g : grp.late) count(g);
     }
     return n;
+}
+
+void Tracker::onGhostDeath(PlayerObject* p, GameObject* killer) {
+    if (m_curGhost && m_curGhost->obj == p && m_curGhost->status == GStatus::Alive) {
+        m_curGhost->status = GStatus::Dead;
+        m_curGhost->deathTick = m_stepTick;
+        m_curGhost->killer = killer;
+    }
+}
+
+Tracker::RealState Tracker::readState(PlayerObject* p) const {
+    RealState s;
+    s.x = p->m_position.x;
+    s.y = p->m_position.y;
+    s.vy = p->m_yVelocity;
+    s.onGround = p->m_isOnGround;
+    s.upsideDown = p->m_isUpsideDown;
+    s.holding = m_realHolding;
+    s.modeKey = modeKeyOf(p);
+    s.speed = p->m_playerSpeed;
+    s.size = p->m_vehicleSize;
+    return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +273,7 @@ void Tracker::endLevel(PlayLayer* pl) {
 void Tracker::startRun(PlayLayer* pl) {
     if (!pl) return;
     if (m_running && !m_current.inputs.empty()) finishRun(pl, false);
-    finishAllGroups(pl, true);
+    finishAllGroups(pl, true, true);
 
     m_current = RunRecord{};
     if (pl->m_level) m_current.levelName = std::string(pl->m_level->m_levelName);
@@ -243,28 +287,15 @@ void Tracker::startRun(PlayLayer* pl) {
     m_realHolding = false;
     m_hasPrevReal = false;
     m_boostThisTick = false;
+    m_accDt = 0.f;
     m_running = !pl->m_isPlatformer;
-
-    // snapshot ring buffer (enough ticks to move an input max-window frames early)
-    int need = snapshotCount();
     for (auto& s : m_snaps) s.tick = -1;
-    while (static_cast<int>(m_snaps.size()) < need) {
-        Snapshot s;
-        s.obj = acquireGhost(pl);
-        if (!s.obj) break;
-        m_snaps.push_back(s);
-    }
-    // create ghost players now (at load / respawn) instead of mid-click, so the first click doesn't stutter
-    int perGroup = 2 * static_cast<int>(std::floor(maxFrames() / resFrames() + 1e-6)) + 2;
-    int warm = std::min(ghostCap(), perGroup * 2);
-    while (static_cast<int>(m_pool.size()) + liveGhostCount() < warm) {
-        auto p = PlayerObject::create(1, 1, pl, pl, true);
+
+    // create test players now (at load / respawn) so the first click doesn't stutter
+    int warm = std::min(ghostCap(), 2 * static_cast<int>(buildOffsets().size()) + 4);
+    while (static_cast<int>(m_pool.size()) < warm && static_cast<int>(m_allObjs.size()) < ghostCap() + 64) {
+        auto p = newObj(pl);
         if (!p) break;
-        p->retain();
-        p->setID("frame-window-ghost"_spr);
-        if (pl->m_objectLayer) pl->m_objectLayer->addChild(p);
-        hidePlayer(p);
-        m_allGhosts.push_back(p);
         m_pool.push_back(p);
     }
     bump();
@@ -272,11 +303,7 @@ void Tracker::startRun(PlayLayer* pl) {
 
 void Tracker::finishRun(PlayLayer* pl, bool completed) {
     if (!m_running) return;
-    finishAllGroups(pl, !completed);
-    for (auto const& p : m_pending) {
-        auto& in = m_current.inputs[p.inputIdx];
-        if (in.state == EvalState::Pending) in.state = EvalState::Unknown;
-    }
+    finishAllGroups(pl, !completed, true);
     m_pending.clear();
     for (auto& in : m_current.inputs) {
         if (in.state == EvalState::Pending) in.state = EvalState::Unknown;
@@ -292,6 +319,7 @@ void Tracker::finishRun(PlayLayer* pl, bool completed) {
         while (m_history.size() > maxRuns) m_history.pop_back();
         m_showLastRun = true;
     }
+    if (m_drawNode) m_drawNode->clear();
     bump();
 }
 
@@ -304,20 +332,19 @@ void Tracker::onRealButton(PlayLayer* pl, bool down) {
     m_realHolding = down;
 
     auto p = pl->m_player1;
-    // releases only matter for modes where holding changes your movement
+    // releases only matter in modes where holding changes your movement;
+    // other releases (cube, ball, ufo...) move together with their click
     bool relevant = down || p->m_isShip || p->m_isDart || p->m_isRobot;
 
     InputRecord rec;
     rec.number = static_cast<int>(m_current.inputs.size()) + 1;
     rec.press = down;
     rec.tick = m_tick;
+    rec.time = m_tick;
     rec.percent = pl->getCurrentPercent();
-    if (!relevant) {
-        rec.state = EvalState::NoEffect;
-        rec.passedPercent = rec.percent;
-    }
+    if (!relevant) rec.state = EvalState::NoEffect;
     m_current.inputs.push_back(rec);
-    m_pending.push_back({down, relevant, m_current.inputs.size() - 1});
+    m_pending.push_back({m_current.inputs.size() - 1, relevant, p->m_position.x});
     m_showLastRun = false;
     bump();
 }
@@ -332,7 +359,7 @@ static bool isApproxBoost(GameObject* obj) {
 void Tracker::onRealRing(GameObject* ring, PlayerObject* p, double vyBefore, bool upBefore, bool dashBefore) {
     if (!m_running || !ring) return;
     if (p->m_yVelocity == vyBefore && p->m_isUpsideDown == upBefore && p->m_isDashing == dashBefore) return;
-    Boost b{ring, p->m_yVelocity, p->m_isUpsideDown, m_tick, isApproxBoost(ring) || p->m_isDashing};
+    Boost b{ring, p->m_yVelocity, p->m_isUpsideDown, isApproxBoost(ring) || p->m_isDashing};
     auto it = std::find_if(m_rings.begin(), m_rings.end(), [&](Boost const& o) { return o.obj == ring; });
     if (it != m_rings.end()) *it = b;
     else m_rings.push_back(b);
@@ -341,7 +368,7 @@ void Tracker::onRealRing(GameObject* ring, PlayerObject* p, double vyBefore, boo
 
 void Tracker::onRealPad(GameObject* pad, PlayerObject* p) {
     if (!m_running || !pad) return;
-    Boost b{pad, p->m_yVelocity, p->m_isUpsideDown, m_tick, isApproxBoost(pad)};
+    Boost b{pad, p->m_yVelocity, p->m_isUpsideDown, isApproxBoost(pad)};
     auto it = std::find_if(m_pads.begin(), m_pads.end(), [&](Boost const& o) { return o.obj == pad; });
     if (it != m_pads.end()) *it = b;
     else m_pads.push_back(b);
@@ -349,7 +376,7 @@ void Tracker::onRealPad(GameObject* pad, PlayerObject* p) {
 }
 
 // ---------------------------------------------------------------------------
-// ghost physics
+// test player physics
 
 void Tracker::tryRing(Ghost& g) {
     if (m_rings.empty() || !g.obj) return;
@@ -381,29 +408,25 @@ void Tracker::tryPad(Ghost& g) {
     }
 }
 
-void Tracker::physStep(PlayLayer* pl, Ghost& g, float dt, int tick) {
+// Mirrors the game's step: player update, then collision. A step that is split
+// by an input works like Click Between Frames does it.
+void Tracker::subStep(PlayLayer* pl, Ghost& g, float dt, bool endOfStep) {
     auto obj = g.obj;
-    if (!obj || g.status != GStatus::Alive || dt <= 0.f) return;
-    if (obj->m_collisionLogTop) obj->m_collisionLogTop->removeAllObjects();
-    if (obj->m_collisionLogBottom) obj->m_collisionLogBottom->removeAllObjects();
-    if (obj->m_collisionLogLeft) obj->m_collisionLogLeft->removeAllObjects();
-    if (obj->m_collisionLogRight) obj->m_collisionLogRight->removeAllObjects();
-
     m_simulating = true;
     m_curGhost = &g;
-    m_stepTick = tick;
-    pl->checkCollisions(obj, dt, false);
-    if (g.status == GStatus::Alive) obj->update(dt);
+    if (dt > 0.f) obj->update(dt);
+    if (endOfStep) {
+        pl->checkCollisions(obj, m_tickDt, false);
+    }
+    else {
+        pl->checkCollisions(obj, (obj->m_isOnSlope && !obj->m_isDart) ? m_tickDt : 0.f, true);
+        resetCollisionLog(obj);
+    }
     m_curGhost = nullptr;
     m_simulating = false;
-
-    if (g.status != GStatus::Alive) return;
-    tryPad(g);
-    if (g.holding && g.ringPending) tryRing(g);
-    if (obj->m_isOnGround) g.ringPending = false;
 }
 
-void Tracker::applyEvent(PlayLayer*, Ghost& g, Event const& ev) {
+void Tracker::applyEvent(Ghost& g, Event const& ev) {
     auto obj = g.obj;
     if (!obj) return;
     m_simulating = true;
@@ -411,7 +434,7 @@ void Tracker::applyEvent(PlayLayer*, Ghost& g, Event const& ev) {
     if (ev.press) {
         obj->pushButton(PlayerButton::Jump);
         g.holding = true;
-        // orbs can be buffered by holding into them, except as ship / wave
+        // holding into an orb can activate it, except as ship / wave
         g.ringPending = !obj->m_isOnGround && !obj->m_isShip && !obj->m_isDart;
     }
     else {
@@ -427,321 +450,483 @@ void Tracker::applyEvent(PlayLayer*, Ghost& g, Event const& ev) {
 
 void Tracker::stepGhost(PlayLayer* pl, Ghost& g, int tick) {
     if (g.status != GStatus::Alive || !g.obj) return;
-    float dt = m_dt;
-    double pos = 0.0; // fraction of this tick already simulated
+    m_stepTick = tick;
+    resetCollisionLog(g.obj);
+    float dt = m_tickDt;
+    double pos = 0.0;
     while (!g.events.empty() && g.events.front().time < tick + 1 - 1e-9) {
         Event ev = g.events.front();
         g.events.erase(g.events.begin());
-        double f = std::max(0.0, ev.time - tick);
+        double f = std::clamp(ev.time - tick, 0.0, 1.0);
         if (f > pos + 1e-6) {
-            physStep(pl, g, static_cast<float>((f - pos) * dt), tick);
+            subStep(pl, g, static_cast<float>((f - pos) * dt), false);
             pos = f;
             if (g.status != GStatus::Alive) return;
         }
-        applyEvent(pl, g, ev);
+        applyEvent(g, ev);
     }
-    if (1.0 - pos > 1e-6) physStep(pl, g, static_cast<float>((1.0 - pos) * dt), tick);
+    subStep(pl, g, static_cast<float>(std::max(0.0, 1.0 - pos) * dt), true);
+    if (g.status != GStatus::Alive) return;
+    tryPad(g);
+    if (g.holding && g.ringPending) tryRing(g);
+    if (g.obj->m_isOnGround) g.ringPending = false;
+}
+
+void Tracker::insertEvent(Ghost& g, Event const& ev) {
+    auto it = std::upper_bound(g.events.begin(), g.events.end(), ev,
+        [](Event const& a, Event const& b) { return a.time < b.time; });
+    g.events.insert(it, ev);
+}
+
+// real inputs (other than the measured one) that happened in [from, to)
+void Tracker::addPastInputs(Ghost& g, size_t beforeIdx, double from, double to) {
+    for (size_t i = beforeIdx; i-- > 0;) {
+        auto const& in = m_current.inputs[i];
+        if (in.time < from - 1e-9) break;
+        if (in.time < to - 1e-9) insertEvent(g, {in.time, in.press, false});
+    }
+}
+
+bool Tracker::spawnFromSnapshot(PlayLayer* pl, Ghost& g, int tick) {
+    auto snap = snapshotAt(tick);
+    if (!snap || !snap->obj) return false;
+    auto obj = acquireObj(pl);
+    if (!obj) return false;
+    copyState(obj, snap->obj, snap->holding);
+    g.obj = obj;
+    g.holding = snap->holding;
+    g.status = GStatus::Alive;
+    return true;
+}
+
+bool Tracker::spawnFromGhost(PlayLayer* pl, Ghost& g, Ghost& src) {
+    if (!src.obj) return false;
+    auto obj = acquireObj(pl);
+    if (!obj) return false;
+    copyState(obj, src.obj, src.holding);
+    g.obj = obj;
+    g.holding = src.holding;
+    g.ringPending = src.ringPending;
+    g.usedBoosts = src.usedBoosts;
+    g.approxBoost = src.approxBoost;
+    g.status = GStatus::Alive;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
-// groups
+// measurement groups (one per input)
 
-void Tracker::createGroup(PlayLayer* pl, PendingInput const& in, int t) {
-    auto& rec = m_current.inputs[in.inputIdx];
-    int SN = static_cast<int>(m_snaps.size());
-    if (SN == 0 || m_dt <= 0.f) {
-        rec.state = EvalState::Unknown;
-        return;
-    }
-    auto& base = m_snaps[t % SN];
-    if (base.tick != t) {
+void Tracker::createGroup(PlayLayer* pl, size_t idx, int t) {
+    auto& rec = m_current.inputs[idx];
+    if (m_tickDt <= 0.f || !snapshotAt(t)) {
         rec.state = EvalState::Unknown;
         return;
     }
 
-    double sf = stepFrames();
-    double rf = resFrames();
-    double mf = maxFrames();
-    int maxK = static_cast<int>(std::floor(mf / rf + 1e-6));
-    // keep CPU use bounded: coarser steps if too many ghosts are already flying
+    auto offs = buildOffsets();
+    // keep CPU use bounded: test fewer shifts if a lot of test players are running
     int available = ghostCap() - liveGhostCount();
-    while (2 * maxK + 2 > available && rf < 1.0) {
-        rf *= 2.0;
-        maxK = static_cast<int>(std::floor(mf / rf + 1e-6));
+    while (static_cast<int>(offs.size()) * 2 + 2 > available && offs.size() > 4) {
+        std::vector<double> thin;
+        for (size_t i = 0; i < offs.size(); ++i) {
+            if (i % 2 == 1 || i + 1 == offs.size()) thin.push_back(offs[i]);
+        }
+        offs.swap(thin);
     }
-    if (2 * maxK + 2 > available) maxK = (available - 2) / 2;
-    if (maxK < 1) {
+    if (static_cast<int>(offs.size()) * 2 + 2 > available) {
         rec.state = EvalState::Unknown;
         return;
     }
 
-    Group grp;
-    grp.inputIdx = in.inputIdx;
-    grp.tick = t;
-    grp.press = in.press;
-    grp.res = rf / sf;
-    grp.maxK = maxK;
-    grp.horizon = t + static_cast<int>(kHorizonSeconds * tps());
+    m_groups.emplace_back();
+    Group& grp = m_groups.back();
+    grp.inputIdx = idx;
+    grp.T0 = rec.time;
+    grp.press = rec.press;
+    grp.fpt = m_fpt;
+    grp.offFrames = offs;
+    grp.prevTime = idx > 0 ? m_current.inputs[idx - 1].time : -1e18;
+    grp.horizonTick = t + static_cast<int>(std::ceil(horizonSeconds() * 240.0 / m_fpt));
+    grp.early.resize(offs.size());
+    grp.late.resize(offs.size());
 
-    // earliest allowed shifted time: after the previous input
-    int prevTick = -1000000;
-    if (in.inputIdx > 0) prevTick = m_current.inputs[in.inputIdx - 1].tick;
+    // control: the input never happens
+    grp.control.isControl = true;
+    if (spawnFromSnapshot(pl, grp.control, t)) addPastInputs(grp.control, idx, t, grp.T0);
 
-    auto spawn = [&](double offset, bool control) -> bool {
-        double T = t + offset;
-        int s = static_cast<int>(std::floor(T + 1e-9));
-        if (offset < 0) {
-            if (T < prevTick + 1) return false;
-            if (s < 0 || t - s >= SN) return false;
-            if (m_snaps[s % SN].tick != s) return false;
+    // baseline: the input exactly when you did it
+    grp.baseline.fireTime = grp.T0;
+    if (spawnFromSnapshot(pl, grp.baseline, t)) {
+        addPastInputs(grp.baseline, idx, t, grp.T0);
+        insertEvent(grp.baseline, {grp.T0, grp.press, true});
+    }
+
+    // earlier
+    bool earlyDead = false;
+    for (size_t k = 0; k < offs.size(); ++k) {
+        auto& g = grp.early[k];
+        g.offTicks = -offs[k] / grp.fpt;
+        g.fireTime = grp.T0 + g.offTicks;
+        if (earlyDead) {
+            g.status = GStatus::Pruned;
+            continue;
+        }
+        int s = static_cast<int>(std::floor(g.fireTime + 1e-9));
+        if (g.fireTime <= grp.prevTime + 1e-9 || !snapshotAt(s) || s > t) {
+            g.status = GStatus::Bounded;
+            earlyDead = true; // nothing further out is valid either
+            continue;
+        }
+        if (!spawnFromSnapshot(pl, g, s)) {
+            g.status = GStatus::Bounded;
+            earlyDead = true;
+            continue;
+        }
+        addPastInputs(g, idx, s, g.fireTime);
+        insertEvent(g, {g.fireTime, grp.press, true});
+        for (int k2 = s; k2 < t && g.status == GStatus::Alive; ++k2) stepGhost(pl, g, k2);
+        if (g.status == GStatus::Dead) {
+            releaseObj(g);
+            earlyDead = true;
+        }
+    }
+
+    // later (spawned when their time comes, from the control)
+    for (size_t k = 0; k < offs.size(); ++k) {
+        auto& g = grp.late[k];
+        g.offTicks = offs[k] / grp.fpt;
+        g.fireTime = grp.T0 + g.offTicks;
+        g.status = GStatus::NotSpawned;
+    }
+}
+
+void Tracker::spawnLateGhosts(PlayLayer* pl, Group& grp, int t) {
+    bool sideDead = false;
+    for (auto& g : grp.late) {
+        if (g.status == GStatus::Dead || g.status == GStatus::Bounded) sideDead = true;
+        if (g.status != GStatus::NotSpawned) continue;
+        if (sideDead) {
+            g.status = GStatus::Pruned;
+            continue;
+        }
+        int s = static_cast<int>(std::floor(g.fireTime + 1e-9));
+        if (s > t) break;
+        if (grp.sawNextRelevant && g.fireTime >= grp.nextRelevant - 1e-9) {
+            g.status = GStatus::Bounded;
+            sideDead = true;
+            continue;
+        }
+        bool ok = false;
+        if (s == static_cast<int>(std::floor(grp.T0 + 1e-9)) && snapshotAt(s)) {
+            // same step as your input: start from the saved state
+            ok = spawnFromSnapshot(pl, g, s);
+            if (ok) addPastInputs(g, grp.inputIdx, s, grp.T0);
+        }
+        else if (grp.control.status == GStatus::Alive) {
+            // until it does its input, it's the same as the control
+            ok = spawnFromGhost(pl, g, grp.control);
+            if (ok) {
+                for (auto const& ev : grp.control.events) insertEvent(g, ev);
+            }
+        }
+        else if (grp.control.status == GStatus::Dead) {
+            // without the input you die before this shifted time: fails on the same obstacle
+            g.status = GStatus::Dead;
+            g.killer = grp.control.killer;
+            g.deathTick = grp.control.deathTick;
+            sideDead = true;
+            continue;
+        }
+        if (!ok) {
+            g.status = GStatus::Bounded;
+            sideDead = true;
+            continue;
+        }
+        insertEvent(g, {g.fireTime, grp.press, true});
+        for (auto const& a : grp.attached) insertEvent(g, {a.time + g.offTicks, a.press, false});
+    }
+}
+
+// a later real input reaches the running measurements
+void Tracker::feedInput(PlayLayer*, size_t idx, bool relevant, int t) {
+    auto const& rec = m_current.inputs[idx];
+    for (auto& grp : m_groups) {
+        if (grp.done || grp.inputIdx >= idx) continue;
+        bool attached = !grp.sawNextRelevant && !relevant;
+        if (!grp.sawNextRelevant && relevant) {
+            grp.sawNextRelevant = true;
+            grp.nextRelevant = rec.time;
+            // shifting an input past the next one would reorder them
+            for (auto& g : grp.late) {
+                if (g.fireTime < rec.time - 1e-9) continue;
+                if (g.status == GStatus::NotSpawned || (g.status == GStatus::Alive && !g.fired)) {
+                    g.status = GStatus::Bounded;
+                    releaseObj(g);
+                }
+            }
+        }
+        if (attached) grp.attached.push_back({rec.time, rec.press, false});
+
+        forEachGhost(grp, [&](Ghost& g) {
+            if (g.status != GStatus::Alive) return;
+            if (attached && g.isControl) return; // control never did this click, so not its release either
+            double time = attached ? rec.time + g.offTicks : rec.time;
+            insertEvent(g, {std::max<double>(time, t), rec.press, false});
+        });
+    }
+}
+
+void Tracker::evaluateGroup(PlayLayer* pl, Group& grp, RealState const& cur, int t) {
+    auto real = pl->m_player1;
+
+    forEachGhost(grp, [&](Ghost& g) {
+        if (g.status == GStatus::Dead && g.obj) releaseObj(g);
+        if (g.status != GStatus::Alive) return;
+        auto o = g.obj;
+        bool same = std::abs(o->m_position.x - cur.x) < kConvergeX &&
+                    std::abs(o->m_position.y - cur.y) < kConvergeY &&
+                    std::abs(o->m_yVelocity - cur.vy) < kConvergeVy &&
+                    o->m_isOnGround == cur.onGround &&
+                    o->m_isUpsideDown == cur.upsideDown &&
+                    g.holding == cur.holding &&
+                    modeKeyOf(o) == cur.modeKey;
+        if (&g == &grp.baseline && !same &&
+            (std::abs(o->m_position.y - cur.y) > 2.f || std::abs(o->m_position.x - cur.x) > 2.f)) {
+            grp.baselineMismatch = true;
+        }
+        if ((g.fired || g.isControl) && same) {
+            if (++g.converged >= 2) {
+                g.status = GStatus::Converged;
+                releaseObj(g);
+            }
         }
         else {
-            s = t;
+            g.converged = 0;
         }
-        auto obj = acquireGhost(pl);
-        if (!obj) return false;
-        auto const& snap = m_snaps[s % SN];
-        copyState(obj, snap.obj, snap.holding, snap.jumpBuffered);
+    });
+    (void)real;
 
-        Ghost g;
-        g.obj = obj;
-        g.offset = offset;
-        g.control = control;
-        g.baseline = !control && offset == 0.0;
-        g.holding = snap.holding;
-        if (!control) g.events.push_back({T, in.press, true});
-        grp.ghosts.push_back(std::move(g));
-        return true;
-    };
-
-    spawn(0.0, false);   // baseline
-    spawn(0.0, true);    // control (input never happens)
-    for (int k = 1; k <= maxK; ++k) {
-        if (!spawn(-k * grp.res, false)) break;
-    }
-    for (int k = 1; k <= maxK; ++k) {
-        spawn(k * grp.res, false);
-    }
-
-    // catch the early ghosts up to the present, then everyone runs tick t
-    for (auto& g : grp.ghosts) {
-        int s = g.offset < 0 ? static_cast<int>(std::floor(t + g.offset + 1e-9)) : t;
-        for (int k = s; k <= t && g.status == GStatus::Alive; ++k) {
-            stepGhost(pl, g, k);
-        }
-    }
-    m_groups.push_back(std::move(grp));
-}
-
-void Tracker::prune(Group& grp) {
-    // a timing that fails makes every timing further out on that side fail too
-    for (int side : {-1, 1}) {
-        int firstDead = -1;
-        for (int k = 1; k <= grp.maxK; ++k) {
-            double off = side * k * grp.res;
-            for (auto& g : grp.ghosts) {
-                if (g.control || std::abs(g.offset - off) > 1e-9) continue;
-                if (g.status == GStatus::Dead) firstDead = k;
-                break;
-            }
-            if (firstDead >= 0) break;
-        }
-        if (firstDead < 0) continue;
-        for (auto& g : grp.ghosts) {
-            if (g.control || g.status != GStatus::Alive) continue;
-            if (g.offset * side > firstDead * grp.res + 1e-9) {
+    // a shift that fails makes every bigger shift on that side fail too
+    for (auto* side : {&grp.early, &grp.late}) {
+        bool dead = false;
+        for (auto& g : *side) {
+            if (dead && (g.status == GStatus::Alive || g.status == GStatus::NotSpawned)) {
                 g.status = GStatus::Pruned;
-                releaseGhost(g);
+                releaseObj(g);
             }
+            if (g.status == GStatus::Dead || g.status == GStatus::Bounded) dead = true;
         }
+    }
+
+    bool noEffect = grp.control.status == GStatus::Converged;
+    bool baselineDead = grp.baseline.status == GStatus::Dead;
+    bool allDone = grp.baseline.status != GStatus::Alive;
+    for (auto* side : {&grp.early, &grp.late}) {
+        for (auto& g : *side) {
+            if (g.status == GStatus::Alive || g.status == GStatus::NotSpawned) allDone = false;
+        }
+    }
+    if (noEffect || baselineDead || allDone || t >= grp.horizonTick) {
+        finishGroup(pl, grp, false, false);
     }
 }
 
-void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated) {
+void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interrupted) {
+    if (grp.done) return;
+    bool truncatedByDeath = truncated;
+    grp.done = true;
     auto& rec = m_current.inputs[grp.inputIdx];
-
-    Ghost* control = nullptr;
-    for (auto& g : grp.ghosts) if (g.control) control = &g;
-
-    auto survived = [&](Ghost const& g) {
-        if (g.status == GStatus::Alive || g.status == GStatus::Converged || g.status == GStatus::Bounded) return true;
-        if (g.status == GStatus::Dead && grp.baselineDeathTick >= 0 && g.deathTick >= grp.baselineDeathTick) return true;
-        return false;
-    };
-    auto find = [&](double off) -> Ghost* {
-        for (auto& g : grp.ghosts) {
-            if (!g.control && std::abs(g.offset - off) < 1e-9) return &g;
-        }
-        return nullptr;
-    };
-
-    if (control && control->status == GStatus::Converged) {
-        rec.state = EvalState::NoEffect;
-    }
-    else {
-        bool approx = grp.baselineMismatch || grp.baselineDeathTick >= 0;
-        int early = 0, late = 0;
-        bool capE = false, capL = false;
-        for (int k = 1; k <= grp.maxK; ++k) {
-            auto g = find(-k * grp.res);
-            if (!g || !survived(*g)) break;
-            if (g->approxBoost) approx = true;
-            early = k;
-            if (k == grp.maxK) capE = true;
-        }
-        for (int k = 1; k <= grp.maxK; ++k) {
-            auto g = find(k * grp.res);
-            if (!g || !survived(*g)) break;
-            if (g->approxBoost) approx = true;
-            late = k;
-            if (k == grp.maxK) capL = true;
-        }
-        double sf = stepFrames();
-        rec.earlyFrames = static_cast<float>(early * grp.res * sf);
-        rec.lateFrames = static_cast<float>(late * grp.res * sf);
-        rec.windowFrames = static_cast<float>((early + late + 1) * grp.res * sf);
-        rec.cappedEarly = capE;
-        rec.cappedLate = capL;
-        rec.approx = approx;
-        rec.truncated = truncated;
-        rec.state = EvalState::Done;
-    }
     rec.passedPercent = pl ? pl->getCurrentPercent() : rec.percent;
 
-    for (auto& g : grp.ghosts) releaseGhost(g);
-    grp.ghosts.clear();
+    if (grp.control.status == GStatus::Converged) {
+        rec.state = EvalState::NoEffect;
+    }
+    else if (grp.baseline.status == GStatus::Dead) {
+        // the test player doing exactly what you did died, so this spot can't be simulated reliably
+        rec.state = EvalState::Unknown;
+    }
+    else {
+        struct SideResult {
+            double edge = 0.0;
+            bool capped = false;
+            bool spacing = false;
+            GameObject* killer = nullptr;
+            bool died = false;
+            bool untested = false;
+        };
+        auto scan = [&](std::vector<Ghost>& side, bool isLate) {
+            SideResult r;
+            int lastOk = -1;
+            for (size_t k = 0; k < side.size(); ++k) {
+                auto& g = side[k];
+                bool ok = g.status == GStatus::Alive || g.status == GStatus::Converged;
+                if (ok) {
+                    lastOk = static_cast<int>(k);
+                    if (k + 1 == side.size()) r.capped = true;
+                    continue;
+                }
+                double inner = lastOk >= 0 ? grp.offFrames[lastOk] : 0.0;
+                if (g.status == GStatus::Dead) {
+                    r.died = true;
+                    r.killer = g.killer;
+                    r.edge = (inner + grp.offFrames[k]) * 0.5;
+                }
+                else if (g.status == GStatus::Bounded) {
+                    r.spacing = true;
+                    double gap = isLate ? (grp.nextRelevant - grp.T0) : (grp.T0 - grp.prevTime);
+                    double gapFrames = gap * grp.fpt;
+                    r.edge = std::clamp(gapFrames, inner, grp.offFrames[k]);
+                }
+                else {
+                    // not tested (run ended / portal): only count what was confirmed
+                    r.edge = inner;
+                    r.untested = true;
+                    truncated = true;
+                }
+                return r;
+            }
+            r.edge = grp.offFrames.empty() ? 0.0 : grp.offFrames.back();
+            return r;
+        };
+        auto e = scan(grp.early, false);
+        auto l = scan(grp.late, true);
+
+        rec.earlyFrames = static_cast<float>(e.edge);
+        rec.lateFrames = static_cast<float>(l.edge);
+        rec.windowFrames = static_cast<float>(e.edge + l.edge);
+        rec.cappedEarly = e.capped;
+        rec.cappedLate = l.capped;
+        rec.truncated = truncated;
+        rec.approx = grp.baselineMismatch;
+        forEachGhost(grp, [&](Ghost& g) { if (g.approxBoost && g.status != GStatus::Dead) rec.approx = true; });
+
+        // what limited the window: the tighter side
+        SideResult const* tight = nullptr;
+        if (!e.capped && !l.capped) tight = e.edge <= l.edge ? &e : &l;
+        else if (!e.capped) tight = &e;
+        else if (!l.capped) tight = &l;
+        if (tight) {
+            if (tight->died) {
+                rec.obstacle = killerName(tight->killer);
+                if (tight->killer && pl && pl->m_levelLength > 0.f) {
+                    rec.obstaclePercent = std::clamp(tight->killer->getPositionX() / pl->m_levelLength * 100.f, 0.f, 100.f);
+                }
+            }
+            else if (tight->spacing) {
+                rec.obstacle = "click spacing";
+            }
+            else if (tight->untested) {
+                rec.obstacle = interrupted && !truncatedByDeath ? "portal (cut short)" : "cut short";
+            }
+        }
+        rec.state = EvalState::Done;
+    }
+
+    forEachGhost(grp, [&](Ghost& g) { releaseObj(g); });
     bump();
 }
 
-void Tracker::finishAllGroups(PlayLayer* pl, bool truncated) {
-    for (auto& grp : m_groups) finishGroup(pl, grp, truncated);
+void Tracker::finishAllGroups(PlayLayer* pl, bool truncated, bool interrupted) {
+    for (auto& grp : m_groups) finishGroup(pl, grp, truncated, interrupted);
     m_groups.clear();
 }
 
 // ---------------------------------------------------------------------------
-// per tick
+// per physics step
 
 void Tracker::processTick(PlayLayer* pl, int t) {
     auto real = pl->m_player1;
-    RealState cur = readState(real, m_realHolding);
+    RealState cur = readState(real);
 
+    // lock everything to 240 FPS frames of real time: GD's step delta is in
+    // 1/60 s units and is scaled by time warp
+    if (m_accDt > 0.f) m_tickDt = m_accDt;
+    float tw = std::max(pl->m_gameState.m_timeWarp, 0.01f);
+    if (m_tickDt > 0.f) {
+        double secs = m_tickDt > 0.02f ? m_tickDt / 60.0 : m_tickDt;
+        m_fpt = std::clamp(240.0 * secs / tw, 0.05, 8.0);
+    }
+
+    // where inside the step each input happened (Click Between Frames splits steps)
+    for (auto const& p : m_pending) {
+        auto& rec = m_current.inputs[p.idx];
+        float dx = cur.x - m_tickStartX;
+        double f = std::abs(dx) > 1e-3f ? std::clamp<double>((p.x - m_tickStartX) / dx, 0.0, 0.999) : 0.0;
+        rec.time = t + f;
+    }
+
+    // portals change things the test players can't copy: finish what's running
     bool inputThisTick = !m_pending.empty();
-
-    // did the player go through a portal (mode / speed / size / teleport / gravity portal)?
-    bool portal = false;
     if (m_hasPrevReal) {
-        portal = cur.modeKey != m_prevReal.modeKey ||
-                 std::abs(cur.speed - m_prevReal.speed) > 0.001f ||
-                 std::abs(cur.size - m_prevReal.size) > 0.001f ||
-                 std::abs(cur.x - m_prevReal.x) > 60.f;
-        bool flipped = cur.modeKey == m_prevReal.modeKey && real->m_isUpsideDown != m_prevUpsideDown;
+        bool portal = cur.modeKey != m_prevReal.modeKey ||
+                      std::abs(cur.speed - m_prevReal.speed) > 0.001f ||
+                      std::abs(cur.size - m_prevReal.size) > 0.001f ||
+                      std::abs(cur.x - m_prevReal.x) > 60.f;
+        bool flipped = cur.modeKey == m_prevReal.modeKey && cur.upsideDown != m_prevReal.upsideDown;
         if (flipped && !inputThisTick && !m_boostThisTick && !real->m_isBall && !real->m_isSwing && !real->m_isSpider) {
             portal = true;
         }
+        if (portal) finishAllGroups(pl, false, true);
     }
     m_boostThisTick = false;
 
-    // inputs that happened during tick t
-    for (auto const& in : m_pending) {
-        if (in.relevant) {
-            // your next real input: every running measurement got you this far
-            for (auto& grp : m_groups) {
-                for (auto& g : grp.ghosts) {
-                    if (g.status == GStatus::Alive && !g.control && !g.fired) {
-                        g.status = GStatus::Bounded; // its timing would be after this input
-                        releaseGhost(g);
-                    }
-                }
-            }
-            finishAllGroups(pl, false);
-        }
-        else {
-            // e.g. releasing as the cube: replay it into running ghosts so holding stays in sync
-            for (auto& grp : m_groups) {
-                for (auto& g : grp.ghosts) {
-                    if (g.status != GStatus::Alive) continue;
-                    double time = t;
-                    if (!g.control && !g.fired) {
-                        // ghost hasn't done its own input yet: keep the same spacing after it
-                        time = grp.tick + g.offset + (t - grp.tick);
-                    }
-                    Event ev{time, in.press, false};
-                    auto it = std::upper_bound(g.events.begin(), g.events.end(), ev,
-                        [](Event const& a, Event const& b) { return a.time < b.time; });
-                    g.events.insert(it, ev);
-                }
-            }
-        }
-    }
-
-    if (portal) finishAllGroups(pl, false);
-
-    // existing ghosts run tick t
-    for (auto& grp : m_groups) {
-        for (auto& g : grp.ghosts) stepGhost(pl, g, t);
-    }
-
-    // new measurements for inputs of tick t
-    for (auto const& in : m_pending) {
-        if (in.relevant) createGroup(pl, in, t);
+    for (auto const& p : m_pending) {
+        feedInput(pl, p.idx, p.relevant, t);
+        if (p.relevant) createGroup(pl, p.idx, t);
     }
     m_pending.clear();
 
-    // check every group against where you really are now
     for (auto& grp : m_groups) {
-        bool allDone = true;
-        bool finishNow = false;
-        for (auto& g : grp.ghosts) {
-            if (g.status == GStatus::Dead && g.obj) releaseGhost(g);
-            if (g.status != GStatus::Alive) continue;
-
-            auto o = g.obj;
-            bool same = std::abs(o->m_position.x - cur.x) < kConvergeX &&
-                        std::abs(o->m_position.y - cur.y) < kConvergeY &&
-                        std::abs(o->m_yVelocity - cur.vy) < kConvergeVy &&
-                        o->m_isOnGround == cur.onGround &&
-                        g.holding == cur.holding &&
-                        modeKeyOf(o) == cur.modeKey &&
-                        o->m_isUpsideDown == real->m_isUpsideDown;
-
-            if (g.baseline && g.fired && !same &&
-                (std::abs(o->m_position.y - cur.y) > 3.f || std::abs(o->m_position.x - cur.x) > 3.f)) {
-                grp.baselineMismatch = true;
-            }
-            if ((g.fired || g.control) && same) {
-                if (++g.convergedTicks >= 2) {
-                    g.status = GStatus::Converged;
-                    releaseGhost(g);
-                    continue;
-                }
-            }
-            else {
-                g.convergedTicks = 0;
-            }
-            allDone = false;
-        }
-        for (auto& g : grp.ghosts) {
-            if (g.baseline && g.status == GStatus::Dead) {
-                // the simulation didn't match your real run here; anything that
-                // survived until this point counts as surviving
-                grp.baselineDeathTick = g.deathTick;
-                finishNow = true;
-            }
-            if (g.control && g.status == GStatus::Converged) finishNow = true;
-        }
-        if (!finishNow) prune(grp);
-        if (finishNow || allDone || t >= grp.horizon) {
-            finishGroup(pl, grp, false);
-        }
+        if (!grp.done) spawnLateGhosts(pl, grp, t);
     }
-    m_groups.erase(
-        std::remove_if(m_groups.begin(), m_groups.end(), [](Group const& g) { return g.ghosts.empty(); }),
-        m_groups.end()
-    );
+    for (auto& grp : m_groups) {
+        if (grp.done) continue;
+        forEachGhost(grp, [&](Ghost& g) { stepGhost(pl, g, t); });
+    }
+    for (auto& grp : m_groups) {
+        if (!grp.done) evaluateGroup(pl, grp, cur, t);
+    }
+    while (!m_groups.empty() && m_groups.front().done) m_groups.pop_front();
+    if (m_groups.size() > 64) {
+        std::deque<Group> keep;
+        for (auto& g : m_groups) if (!g.done) keep.push_back(std::move(g));
+        m_groups.swap(keep);
+    }
+
+    drawDebug(pl);
 
     m_prevReal = cur;
-    m_prevUpsideDown = real->m_isUpsideDown;
     m_hasPrevReal = true;
+}
+
+void Tracker::drawDebug(PlayLayer* pl) {
+    bool show = Mod::get()->getSettingValue<bool>("show-test-players");
+    if (!show) {
+        if (m_drawNode) m_drawNode->clear();
+        return;
+    }
+    if (!m_drawNode) {
+        m_drawNode = CCDrawNode::create();
+        m_drawNode->retain();
+        if (pl->m_objectLayer) pl->m_objectLayer->addChild(m_drawNode, 1000);
+    }
+    m_drawNode->clear();
+    for (auto& grp : m_groups) {
+        if (grp.done) continue;
+        forEachGhost(grp, [&](Ghost& g) {
+            if (g.status != GStatus::Alive || !g.obj) return;
+            auto r = g.obj->getObjectRect();
+            CCPoint pts[4] = {
+                {r.getMinX(), r.getMinY()}, {r.getMinX(), r.getMaxY()},
+                {r.getMaxX(), r.getMaxY()}, {r.getMaxX(), r.getMinY()},
+            };
+            ccColor4F col = g.isControl ? ccColor4F{1.f, 1.f, 1.f, 0.6f}
+                          : g.offTicks < 0 ? ccColor4F{0.3f, 0.8f, 1.f, 0.6f}
+                          : g.offTicks > 0 ? ccColor4F{1.f, 0.6f, 0.2f, 0.6f}
+                                           : ccColor4F{0.3f, 1.f, 0.3f, 0.8f};
+            m_drawNode->drawPolygon(pts, 4, ccColor4F{0.f, 0.f, 0.f, 0.f}, 0.4f, col);
+        });
+    }
 }
 
 void Tracker::onTickStart(PlayLayer* pl) {
@@ -751,26 +936,30 @@ void Tracker::onTickStart(PlayLayer* pl) {
 
     if (m_tick > 0) processTick(pl, m_tick - 1);
     if (!m_running) return;
+    m_accDt = 0.f;
 
-    // save the state at the start of this tick
+    // keep enough saved states to move an input max-window frames earlier
+    size_t need = static_cast<size_t>(std::ceil(maxFrames() / m_fpt)) + 4;
+    if (m_snaps.size() < need) {
+        for (auto& s : m_snaps) s.tick = -1; // indexing changes
+        while (m_snaps.size() < need) {
+            Snapshot s;
+            s.obj = acquireObj(pl);
+            if (!s.obj) break;
+            m_snaps.push_back(s);
+        }
+    }
+
+    // save the state at the start of this step
     if (!m_snaps.empty()) {
         auto& snap = m_snaps[m_tick % m_snaps.size()];
         if (snap.obj) {
-            bool wasSim = m_simulating;
-            m_simulating = true;
-            snap.obj->copyAttributes(real);
-            snap.obj->m_gravityMod = real->m_gravityMod;
-            snap.obj->m_isOnGround = real->m_isOnGround;
-            snap.obj->m_yVelocity = real->m_yVelocity;
-            snap.obj->m_position = real->m_position;
-            snap.obj->setPosition(real->getPosition());
-            snap.obj->m_isUpsideDown = real->m_isUpsideDown;
-            m_simulating = wasSim;
+            copyState(snap.obj, real, m_realHolding);
             snap.tick = m_tick;
             snap.holding = m_realHolding;
-            snap.jumpBuffered = real->m_jumpBuffered;
         }
     }
+    m_tickStartX = real->m_position.x;
 }
 
 void Tracker::onTickEnd(PlayLayer*) {
@@ -799,12 +988,12 @@ ccColor3B windowColor(InputRecord const& r) {
     if (r.state != EvalState::Done) return {150, 150, 150};
     if (r.isFree()) return {200, 200, 200};
     float w = r.windowFrames;
-    if (w < 1.f) return {255, 60, 220};   // sub-frame: magenta
-    if (w < 2.f) return {255, 70, 70};    // 1-2: red
-    if (w < 3.f) return {255, 150, 50};   // 2-3: orange
-    if (w < 4.f) return {255, 230, 60};   // 3-4: yellow
-    if (w < 6.f) return {150, 255, 80};   // 4-6: lime
-    if (w < 10.f) return {80, 220, 255};  // 6-10: cyan
+    if (w < 1.f) return {255, 60, 220};   // 0-1: needs more than 240 fps
+    if (w < 2.f) return {255, 70, 70};    // 1-2
+    if (w < 3.f) return {255, 150, 50};   // 2-3
+    if (w < 4.f) return {255, 230, 60};   // 3-4
+    if (w < 6.f) return {150, 255, 80};   // 4-6
+    if (w < 10.f) return {80, 220, 255};  // 6-10
     return {200, 200, 200};
 }
 

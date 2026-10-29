@@ -29,6 +29,13 @@ static bool isRealPlayer1(PlayerObject* p) {
 // physics tick + collision filtering for ghosts
 
 class $modify(FWBaseGameLayer, GJBaseGameLayer) {
+    static void onModify(auto& self) {
+        (void)self.setHookPriority("GJBaseGameLayer::collisionCheckObjects", Priority::First);
+        (void)self.setHookPriority("GJBaseGameLayer::canBeActivatedByPlayer", Priority::First);
+        (void)self.setHookPriority("GJBaseGameLayer::playerTouchedRing", Priority::First);
+        (void)self.setHookPriority("GJBaseGameLayer::flipGravity", Priority::First);
+    }
+
     // called once per physics tick (240 per second in 2.2)
     void processCommands(float dt, bool isHalfTick, bool isLastTick) {
         auto pl = playLayerFor(this);
@@ -49,7 +56,8 @@ class $modify(FWBaseGameLayer, GJBaseGameLayer) {
             GJBaseGameLayer::collisionCheckObjects(player, objects, objectCount, dt);
             return;
         }
-        gd::vector<GameObject*> filtered;
+        static gd::vector<GameObject*> filtered;
+        filtered.clear();
         for (int i = 0; i < objectCount; ++i) {
             auto obj = objects->at(i);
             if (!obj) continue;
@@ -73,7 +81,17 @@ class $modify(FWBaseGameLayer, GJBaseGameLayer) {
     }
 
     void flipGravity(PlayerObject* player, bool flip, bool noEffects) {
-        if (Tracker::get().isSimulating()) return;
+        auto& tr = Tracker::get();
+        if (tr.isSimulating()) {
+            // flip only the test player itself (never the real players, no effects)
+            static bool s_inFlip = false;
+            if (!s_inFlip && tr.isGhost(player)) {
+                s_inFlip = true;
+                player->flipGravity(flip, true);
+                s_inFlip = false;
+            }
+            return;
+        }
         GJBaseGameLayer::flipGravity(player, flip, noEffects);
     }
 };
@@ -82,6 +100,12 @@ class $modify(FWBaseGameLayer, GJBaseGameLayer) {
 // player: catch every kind of input (mouse, any key, controller, touch)
 
 class $modify(FWPlayerObject, PlayerObject) {
+    static void onModify(auto& self) {
+        (void)self.setHookPriority("PlayerObject::ringJump", Priority::First);
+        (void)self.setHookPriority("PlayerObject::incrementJumps", Priority::First);
+        (void)self.setHookPriority("PlayerObject::playSpiderDashEffect", Priority::First);
+    }
+
     bool pushButton(PlayerButton button) {
         bool ret = PlayerObject::pushButton(button);
         if (button == PlayerButton::Jump && isRealPlayer1(this)) {
@@ -157,6 +181,12 @@ class $modify(FWGameObject, GameObject) {
 // level lifecycle
 
 class $modify(FWPlayLayer, PlayLayer) {
+    // run before MegaHack / Eclipse / other mods so a test player's "death" never
+    // reaches noclip, hitboxes-on-death, death effects or attempt counters
+    static void onModify(auto& self) {
+        (void)self.setHookPriority("PlayLayer::destroyPlayer", Priority::First);
+    }
+
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
         Tracker::get().beginLevel(this);
         if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
@@ -173,9 +203,9 @@ class $modify(FWPlayLayer, PlayLayer) {
 
     void destroyPlayer(PlayerObject* player, GameObject* object) {
         auto& tr = Tracker::get();
-        // a ghost hit something: that timing fails, nothing happens in the real game
+        // a test player hit something: that timing fails, nothing happens in the real game
         if (tr.isGhost(player)) {
-            tr.onGhostDeath(player);
+            tr.onGhostDeath(player, object);
             return;
         }
         // the hidden anti-cheat spike at level start

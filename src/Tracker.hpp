@@ -3,6 +3,7 @@
 #include <Geode/Geode.hpp>
 #include <deque>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 class PlayLayer;
@@ -12,27 +13,31 @@ class GameObject;
 namespace fw {
 
 enum class EvalState {
-    Pending,   // ghosts are still flying through the obstacle
+    Pending,   // test players are still going through the obstacle
     Done,      // window measured
-    NoEffect,  // the input did not change anything (e.g. releasing as the cube)
+    NoEffect,  // the input did not change anything (e.g. a mid-air click)
     Unknown,   // could not be measured
 };
 
 struct InputRecord {
     int number = 0;            // 1-based index within the run
     bool press = true;         // true = click, false = release
-    int tick = 0;              // physics tick the input happened on
+    int tick = 0;              // physics step the input happened on
+    double time = 0.0;         // step + fraction of the step (Click Between Frames)
     float percent = 0.f;       // level percent at the input
-    float passedPercent = 0.f; // level percent when the measurement finished (obstacle passed)
+    float passedPercent = 0.f; // level percent when the measurement finished
     EvalState state = EvalState::Pending;
 
-    float earlyFrames = 0.f;   // how many 240fps frames earlier it still works
-    float lateFrames = 0.f;    // how many 240fps frames later it still works
-    float windowFrames = 0.f;  // total window
-    bool cappedEarly = false;  // hit the max window limit
+    float earlyFrames = 0.f;   // 240fps frames it could have been earlier
+    float lateFrames = 0.f;    // 240fps frames it could have been later
+    float windowFrames = 0.f;  // total window in 240fps frames
+    bool cappedEarly = false;  // more than the max window
     bool cappedLate = false;
-    bool truncated = false;    // you died before the measurement finished
-    bool approx = false;       // the simulation did not perfectly reproduce your real run
+    bool truncated = false;    // you died before it could be fully measured
+    bool approx = false;       // relied on orb/pad copying or the simulation drifted
+
+    std::string obstacle;      // what limited the window: "spike", "block", "click spacing"...
+    float obstaclePercent = -1.f;
 
     bool isFree() const { return cappedEarly && cappedLate; }
 };
@@ -60,20 +65,20 @@ public:
     void startRun(PlayLayer* pl);
     void finishRun(PlayLayer* pl, bool completed);
 
-    // called around every physics tick
+    // called around every physics step
     void onTickStart(PlayLayer* pl);
     void onTickEnd(PlayLayer* pl);
 
     // real player 1 events
     void onRealButton(PlayLayer* pl, bool down);
-    void onRealUpdate(float dt) { if (dt > 0.f) m_dt = dt; }
+    void onRealUpdate(float dt) { if (dt > 0.f) m_accDt += dt; }
     void onRealRing(GameObject* ring, PlayerObject* p, double vyBefore, bool upBefore, bool dashBefore);
     void onRealPad(GameObject* pad, PlayerObject* p);
 
-    // ghost simulation state (used by the side-effect hooks)
+    // test player simulation (used by the side-effect hooks)
     bool isSimulating() const { return m_simulating; }
-    bool isGhost(PlayerObject* p) const;
-    void onGhostDeath(PlayerObject* p);
+    bool isGhost(PlayerObject* p) const { return p && m_ghostSet.count(p); }
+    void onGhostDeath(PlayerObject* p, GameObject* killer);
 
     // data for the UI
     RunRecord const& current() const { return m_current; }
@@ -82,119 +87,147 @@ public:
     int revision() const { return m_revision; }
     bool showingLastRun() const { return m_showLastRun; }
 
-private:
-    struct Boost {
-        GameObject* obj = nullptr;
-        double vy = 0.0;
-        bool upsideDown = false;
-        int tick = 0;
-        bool approx = false;     // dash / spider / teleport style objects
-    };
-
     struct Event {
-        double time = 0.0;       // absolute tick time (fractional = between ticks)
+        double time = 0.0;
         bool press = true;
-        bool own = false;        // the shifted input this group is measuring
+        bool own = false; // the shifted input being measured
     };
 
-    enum class GStatus { Alive, Dead, Converged, Pruned, Bounded };
+private:
+    enum class GStatus { NotSpawned, Alive, Dead, Converged, Bounded, Pruned };
 
     struct Ghost {
         PlayerObject* obj = nullptr;
-        double offset = 0.0;     // ticks, negative = earlier
-        bool control = false;    // never performs the input (detects "no effect")
-        bool baseline = false;   // offset 0 (should reproduce the real run)
+        double offTicks = 0.0;   // shift in physics steps (negative = earlier)
+        double fireTime = 0.0;   // when the shifted input happens
+        GStatus status = GStatus::NotSpawned;
+        bool isControl = false;  // never does the input (detects "no effect")
         bool fired = false;
         bool holding = false;
         bool ringPending = false;
-        GStatus status = GStatus::Alive;
-        int deathTick = 0;
-        float deathX = 0.f;
-        int convergedTicks = 0;
+        bool approxBoost = false;
+        int converged = 0;
+        int deathTick = -1;
+        GameObject* killer = nullptr;
         std::vector<Event> events;
         std::vector<GameObject*> usedBoosts;
-        bool approxBoost = false;
     };
 
     struct Group {
         size_t inputIdx = 0;
-        int tick = 0;
+        double T0 = 0.0;
         bool press = true;
-        double res = 0.0;        // offset step in ticks
-        int maxK = 0;
-        int horizon = 0;
+        double fpt = 1.0;              // 240fps frames per physics step
+        std::vector<double> offFrames; // tested shifts, in frames, ascending
+        Ghost control;
+        Ghost baseline;
+        std::vector<Ghost> early;
+        std::vector<Ghost> late;
+        double prevTime = -1e18;
+        bool sawNextRelevant = false;
+        double nextRelevant = 1e18;
+        std::vector<Event> attached;   // inputs that move along with this one (e.g. its cube release)
+        int horizonTick = 0;
         bool baselineMismatch = false;
-        int baselineDeathTick = -1;
-        std::vector<Ghost> ghosts;
-    };
-
-    struct RealState {
-        float x = 0.f, y = 0.f;
-        double vy = 0.0;
-        bool onGround = false;
-        bool holding = false;
-        int modeKey = 0;
-        float speed = 0.f;
-        float size = 1.f;
+        bool done = false;
     };
 
     struct Snapshot {
         PlayerObject* obj = nullptr;
         int tick = -1;
         bool holding = false;
-        bool jumpBuffered = false;
     };
 
     struct PendingInput {
-        bool press;
+        size_t idx;
         bool relevant;
-        size_t inputIdx;
+        float x;
     };
 
-    PlayerObject* acquireGhost(PlayLayer* pl);
-    void releaseGhost(Ghost& g);
-    void copyState(PlayerObject* dst, PlayerObject* src, bool holding, bool jumpBuffered);
+    struct Boost {
+        GameObject* obj = nullptr;
+        double vy = 0.0;
+        bool upsideDown = false;
+        bool approx = false;
+    };
+
+    struct RealState {
+        float x = 0.f, y = 0.f;
+        double vy = 0.0;
+        bool onGround = false;
+        bool upsideDown = false;
+        bool holding = false;
+        int modeKey = 0;
+        float speed = 0.f;
+        float size = 1.f;
+    };
+
+    template <class F> static void forEachGhost(Group& g, F&& f) {
+        f(g.control);
+        f(g.baseline);
+        for (auto& x : g.early) f(x);
+        for (auto& x : g.late) f(x);
+    }
+
+    PlayerObject* acquireObj(PlayLayer* pl);
+    PlayerObject* newObj(PlayLayer* pl);
+    void releaseObj(Ghost& g);
     void hidePlayer(PlayerObject* p);
     void destroyPool();
+    void copyState(PlayerObject* dst, PlayerObject* src, bool holding);
+    Snapshot* snapshotAt(int tick);
 
-    void processTick(PlayLayer* pl, int t);
-    void createGroup(PlayLayer* pl, PendingInput const& in, int t);
+    bool spawnFromSnapshot(PlayLayer* pl, Ghost& g, int tick);
+    bool spawnFromGhost(PlayLayer* pl, Ghost& g, Ghost& src);
+    void addPastInputs(Ghost& g, size_t beforeIdx, double from, double to);
+    static void insertEvent(Ghost& g, Event const& ev);
+
     void stepGhost(PlayLayer* pl, Ghost& g, int tick);
-    void physStep(PlayLayer* pl, Ghost& g, float dt, int tick);
-    void applyEvent(PlayLayer* pl, Ghost& g, Event const& ev);
+    void subStep(PlayLayer* pl, Ghost& g, float dt, bool endOfStep);
+    void applyEvent(Ghost& g, Event const& ev);
     void tryRing(Ghost& g);
     void tryPad(Ghost& g);
-    void prune(Group& grp);
-    void finishGroup(PlayLayer* pl, Group& grp, bool truncated);
-    void finishAllGroups(PlayLayer* pl, bool truncated);
-    RealState readState(PlayerObject* p, bool holding) const;
+
+    void processTick(PlayLayer* pl, int t);
+    void feedInput(PlayLayer* pl, size_t idx, bool relevant, int t);
+    void createGroup(PlayLayer* pl, size_t idx, int t);
+    void spawnLateGhosts(PlayLayer* pl, Group& grp, int t);
+    void evaluateGroup(PlayLayer* pl, Group& grp, RealState const& cur, int t);
+    void finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interrupted);
+    void finishAllGroups(PlayLayer* pl, bool truncated, bool interrupted);
+    RealState readState(PlayerObject* p) const;
     int liveGhostCount() const;
+    std::vector<double> buildOffsets() const;
+    void drawDebug(PlayLayer* pl);
     void bump() { ++m_revision; }
 
     RunRecord m_current;
     std::deque<RunRecord> m_history;
 
-    std::vector<PlayerObject*> m_pool;      // free ghost players
-    std::vector<PlayerObject*> m_allGhosts; // every ghost player we created
+    std::vector<PlayerObject*> m_pool;
+    std::vector<PlayerObject*> m_allObjs;
+    std::unordered_set<PlayerObject*> m_ghostSet;
     std::vector<Snapshot> m_snaps;
-    std::vector<Group> m_groups;
+    std::deque<Group> m_groups;
     std::vector<PendingInput> m_pending;
     std::vector<Boost> m_rings;
     std::vector<Boost> m_pads;
+    cocos2d::CCDrawNode* m_drawNode = nullptr;
 
     RealState m_prevReal;
     bool m_hasPrevReal = false;
-    bool m_prevUpsideDown = false;
+    float m_tickStartX = 0.f;
     int m_tick = 0;
-    float m_dt = 0.f;
+    float m_accDt = 0.f;
+    float m_tickDt = 0.f;
+    double m_fpt = 1.0;
     bool m_running = false;
     bool m_realHolding = false;
     bool m_boostThisTick = false;
-    int m_stepTick = 0;
     bool m_simulating = false;
     bool m_showLastRun = false;
     Ghost* m_curGhost = nullptr;
-    int m_lastInputTick = -1000000;
+    int m_stepTick = 0;
     int m_revision = 0;
 };
 

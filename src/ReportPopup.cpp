@@ -98,10 +98,10 @@ bool ReportPopup::init() {
     };
     addHeader("#", 8.f, 0.f);
     addHeader("Input", 40.f, 0.f);
-    addHeader("Click > Passed", 108.f, 0.f);
-    addHeader("Window", 250.f, 0.5f);
-    addHeader("Early", 320.f, 0.5f);
-    addHeader("Late", 375.f, 0.5f);
+    addHeader("At", 88.f, 0.f);
+    addHeader("Window", 172.f, 0.5f);
+    addHeader("Early / Late", 245.f, 0.5f);
+    addHeader("Obstacle", 300.f, 0.f);
 
     auto listBg = CCLayerColor::create(ccColor4B{0, 0, 0, 90}, kListW, kListH);
     listBg->setPosition({lx, hy - 10.f - kListH});
@@ -124,7 +124,7 @@ bool ReportPopup::init() {
     moveBtn->setPosition({kPopupW * 0.5f, 20.f});
     menu->addChild(moveBtn);
 
-    auto legend = label("Frames are 240 FPS.  ~ = orb/pad estimate   * = died before it was passed", "chatFont.fnt", 0.45f, {170, 170, 170});
+    auto legend = label("240 FPS frames.  0-1 = needs more than 240 FPS.  ~ = estimate   * = cut short", "chatFont.fnt", 0.45f, {170, 170, 170});
     legend->setPosition({kPopupW * 0.5f, 40.f});
     m_mainLayer->addChild(legend);
 
@@ -232,20 +232,24 @@ void ReportPopup::buildList(RunRecord const& run) {
         };
         add(std::to_string(in->number), 8.f, 0.f, {200, 200, 200});
         add(in->press ? "Click" : "Release", 40.f, 0.f, in->press ? ccColor3B{255, 255, 255} : ccColor3B{170, 190, 255});
-        add(in->state == EvalState::Done ? fmt::format("{:.1f}% > {:.1f}%", in->percent, in->passedPercent)
-                                         : fmt::format("{:.1f}%", in->percent), 108.f, 0.f, {200, 200, 200});
+        add(fmt::format("{:.1f}%", in->percent), 88.f, 0.f, {200, 200, 200});
 
         std::string win = windowLabel(*in);
-        if (in->state == EvalState::Done && !in->isFree()) win += " frames";
         if (in->state == EvalState::NoEffect) win = "no effect";
         if (in->state == EvalState::Unknown) win = "can't measure";
         auto wl = label(win, "bigFont.fnt", 0.32f, windowColor(*in));
-        wl->setPosition({250.f, y});
+        wl->setPosition({172.f, y});
         content->addChild(wl);
 
         if (in->state == EvalState::Done) {
-            add(in->cappedEarly ? "max" : fmt::format("-{:.2f}", in->earlyFrames), 320.f, 0.5f, {180, 180, 180});
-            add(in->cappedLate ? "max" : fmt::format("+{:.2f}", in->lateFrames), 375.f, 0.5f, {180, 180, 180});
+            add(fmt::format("-{} / +{}",
+                    in->cappedEarly ? std::string("max") : fmt::format("{:.2f}", in->earlyFrames),
+                    in->cappedLate ? std::string("max") : fmt::format("{:.2f}", in->lateFrames)),
+                245.f, 0.5f, {180, 180, 180}, 0.5f);
+            std::string obs = in->obstacle;
+            if (!obs.empty() && in->obstaclePercent >= 0.f) obs += fmt::format(" {:.1f}%", in->obstaclePercent);
+            if (obs.empty()) obs = in->isFree() ? "" : "-";
+            add(obs, 300.f, 0.f, {230, 200, 160}, 0.5f);
         }
         y -= kRowH;
     }
