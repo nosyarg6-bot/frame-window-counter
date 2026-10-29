@@ -320,43 +320,33 @@ void Tracker::destroyPool() {
 // frame windows shown in the level (optional)
 
 void Tracker::spawnLiveLabel(PlayLayer* pl, size_t idx, float x, float y) {
-    if (!pl->m_objectLayer || m_liveLabels.count(idx)) return;
-    auto label = CCLabelBMFont::create("...", "bigFont.fnt");
-    label->setScale(0.4f);
-    label->setColor({180, 180, 180});
-    label->setZOrder(1000);
-    label->setPosition({x, y + 32.f});
-    label->retain();
-    pl->m_objectLayer->addChild(label);
-    m_liveLabels[idx] = label;
+    // remember where you clicked; the label pops up there once the window is known
+    if (!pl->m_objectLayer) return;
+    m_clickPos[idx] = CCPoint(x, y);
 }
 
 void Tracker::finishLiveLabel(size_t idx) {
-    auto it = m_liveLabels.find(idx);
-    if (it == m_liveLabels.end()) return;
-    auto label = it->second;
-    m_liveLabels.erase(it);
+    auto it = m_clickPos.find(idx);
+    if (it == m_clickPos.end()) return;
+    CCPoint pos = it->second;
+    m_clickPos.erase(it);
+    auto pl = PlayLayer::get();
+    if (!pl || !pl->m_objectLayer || !Mod::get()->getSettingValue<bool>("show-level-labels")) return;
     auto const& in = m_current.inputs[idx];
-    if (in.state == EvalState::NoEffect && !Mod::get()->getSettingValue<bool>("show-ineffective")) {
-        label->removeFromParent();
-    }
-    else {
-        label->setString(labelText(in).c_str());
-        label->setColor(windowColor(in));
-        label->setScale(in.press ? 0.55f : 0.4f);
-        label->runAction(CCSequence::create(
-            CCDelayTime::create(1.5f), CCFadeOut::create(0.5f), CCRemoveSelf::create(), nullptr
-        ));
-    }
-    label->release();
+    if (in.state != EvalState::Done || in.isFree()) return;
+    double maxShown = Mod::get()->getSettingValue<double>("level-labels-max");
+    if (in.windowFrames > maxShown) return;
+
+    auto label = makeWorldLabel(in);
+    label->setPosition({pos.x, pos.y + 32.f});
+    pl->m_objectLayer->addChild(label);
+    label->runAction(CCSequence::create(
+        CCDelayTime::create(1.5f), CCFadeOut::create(0.5f), CCRemoveSelf::create(), nullptr
+    ));
 }
 
 void Tracker::clearLiveLabels() {
-    for (auto& [idx, label] : m_liveLabels) {
-        label->removeFromParent();
-        label->release();
-    }
-    m_liveLabels.clear();
+    m_clickPos.clear();
 }
 
 void Tracker::copyState(PlayerObject* dst, PlayerObject* src, bool holding) {
@@ -441,8 +431,9 @@ void Tracker::resolveHits(Group& grp, int t) {
 
 Tracker::RealState Tracker::readState(PlayerObject* p) const {
     RealState s;
-    s.x = p->m_position.x;
-    s.y = p->m_position.y;
+    // the node position is the real one; PlayerObject::m_position is only synced by the game layer
+    s.x = p->getPositionX();
+    s.y = p->getPositionY();
     s.vy = p->m_yVelocity;
     s.onGround = p->m_isOnGround;
     s.upsideDown = p->m_isUpsideDown;
@@ -481,7 +472,7 @@ void Tracker::startRun(PlayLayer* pl) {
     m_current = RunRecord{};
     m_current.replay = std::make_shared<std::vector<ReplayFrame>>();
     m_current.replay->reserve(240 * 30);
-    if (pl->m_player1) m_current.startX = pl->m_player1->m_position.x;
+    if (pl->m_player1) m_current.startX = pl->m_player1->getPositionX();
     m_realDepth.clear();
     if (pl->m_level) m_current.levelName = std::string(pl->m_level->m_levelName);
     m_current.attempt = pl->m_attempts;
@@ -562,7 +553,7 @@ void Tracker::onRealButton(PlayLayer* pl, bool down) {
     rec.percent = pl->getCurrentPercent();
     if (!relevant) rec.state = EvalState::NoEffect;
     m_current.inputs.push_back(rec);
-    m_pending.push_back({m_current.inputs.size() - 1, relevant, p->m_position.x});
+    m_pending.push_back({m_current.inputs.size() - 1, relevant, p->getPositionX()});
     m_showLastRun = false;
     bump();
 }
@@ -634,7 +625,9 @@ void Tracker::subStep(PlayLayer* pl, Ghost& g, float dt, bool endOfStep) {
     m_curGhost = &g;
     if (dt > 0.f) obj->update(dt);
     if (endOfStep) {
-        pl->checkCollisions(obj, m_tickDt, false);
+        // ignoreDamage: the game never "kills" a test player (so MegaHack's hitboxes
+        // on death, noclip etc. never react); deaths come from our own hit check
+        pl->checkCollisions(obj, m_tickDt, true);
     }
     else {
         pl->checkCollisions(obj, (obj->m_isOnSlope && !obj->m_isDart) ? m_tickDt : 0.f, true);
@@ -672,7 +665,7 @@ void Tracker::stepGhost(PlayLayer* pl, Ghost& g, int tick) {
     resetCollisionLog(g.obj);
     float dt = m_tickDt;
     double pos = 0.0;
-    CCPoint stepStart = g.obj->m_position;
+    CCPoint stepStart = g.obj->getPosition();
     bool split = false;
     while (!g.events.empty() && g.events.front().time < tick + 1 - 1e-9) {
         Event ev = g.events.front();
@@ -927,15 +920,16 @@ void Tracker::evaluateGroup(PlayLayer* pl, Group& grp, RealState const& cur, int
         if (g.status == GStatus::Dead && g.obj) releaseObj(g);
         if (g.status != GStatus::Alive) return;
         auto o = g.obj;
-        bool same = std::abs(o->m_position.x - cur.x) < kConvergeX &&
-                    std::abs(o->m_position.y - cur.y) < kConvergeY &&
+        auto opos = o->getPosition();
+        bool same = std::abs(opos.x - cur.x) < kConvergeX &&
+                    std::abs(opos.y - cur.y) < kConvergeY &&
                     std::abs(o->m_yVelocity - cur.vy) < kConvergeVy &&
                     o->m_isOnGround == cur.onGround &&
                     o->m_isUpsideDown == cur.upsideDown &&
                     g.holding == cur.holding &&
                     modeKeyOf(o) == cur.modeKey;
         if (&g == &grp.baseline) {
-            float dx = std::abs(o->m_position.x - cur.x), dy = std::abs(o->m_position.y - cur.y);
+            float dx = std::abs(opos.x - cur.x), dy = std::abs(opos.y - cur.y);
             grp.baseMaxDx = std::max(grp.baseMaxDx, dx);
             grp.baseMaxDy = std::max(grp.baseMaxDy, dy);
             if (!same && (dy > 2.f || dx > 2.f)) grp.baselineMismatch = true;
@@ -1143,7 +1137,7 @@ void Tracker::processTick(PlayLayer* pl, int t) {
     for (auto const& p : m_pending) {
         feedInput(pl, p.idx, p.relevant, t);
         if (p.relevant) {
-            if (liveLabels) spawnLiveLabel(pl, p.idx, p.x, cur.y);
+            if (liveLabels) spawnLiveLabel(pl, p.idx, m_tickStartX + (cur.x - m_tickStartX) * static_cast<float>(m_current.inputs[p.idx].time - t), cur.y);
             createGroup(pl, p.idx, t);
             if (m_current.inputs[p.idx].state != EvalState::Pending) finishLiveLabel(p.idx);
         }
@@ -1240,7 +1234,7 @@ void Tracker::onTickStart(PlayLayer* pl) {
             snap.holding = m_realHolding;
         }
     }
-    m_tickStartX = real->m_position.x;
+    m_tickStartX = real->getPositionX();
 }
 
 void Tracker::onTickEnd(PlayLayer*) {

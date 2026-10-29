@@ -242,7 +242,7 @@ private:
     std::unordered_map<GameObject*, float> m_realDepth; // how deep your real (surviving) run went into things
     cocos2d::CCDrawNode* m_drawNode = nullptr;
     cocos2d::CCLayer* m_ghostRoot = nullptr; // invisible home for test players (hitbox drawers can't see them)
-    std::unordered_map<size_t, cocos2d::CCLabelBMFont*> m_liveLabels;
+    std::unordered_map<size_t, cocos2d::CCPoint> m_clickPos;
 
     RealState m_prevReal;
     bool m_hasPrevReal = false;

@@ -12,9 +12,11 @@ using namespace geode::prelude;
 namespace fw {
 
 static constexpr float kW = 330.f;
-static constexpr float kH = 275.f;
+static constexpr float kH = 300.f;
 static constexpr float kMinScale = 0.4f;
 static constexpr float kMaxScale = 2.0f;
+static constexpr float kLabelMaxLo = 1.f;
+static constexpr float kLabelMaxHi = 30.f;
 
 static float thumbValue(CCObject* sender) {
     if (auto t = typeinfo_cast<SliderThumb*>(sender)) return std::clamp(t->getValue(), 0.f, 1.f);
@@ -120,7 +122,27 @@ bool OverlayPopup::init() {
     auto sep = CCLayerColor::create(ccColor4B{255, 255, 255, 40}, kW - 40.f, 1.f);
     sep->setPosition({20.f, y2 + 14.f});
     m_mainLayer->addChild(sep);
-    addToggle("Show frame windows in the level", "show-level-labels", y2, m_mainLayer, menu, nullptr);
+    addToggle("Show frame windows in the level", "show-level-labels", y2, m_mainLayer, menu, [this]() {
+        this->updateVisibility();
+    });
+    // only shown while "show frame windows in the level" is on
+    m_labelOptions = CCNode::create();
+    m_mainLayer->addChild(m_labelOptions, 4);
+    auto maxLabel = CCLabelBMFont::create("Only show up to", "bigFont.fnt");
+    maxLabel->setScale(0.3f);
+    maxLabel->setAnchorPoint({0.f, 0.5f});
+    maxLabel->setPosition({46.f, y2 - 24.f});
+    m_labelOptions->addChild(maxLabel);
+    m_labelMax = Slider::create(this, menu_selector(OverlayPopup::onLabelMax), 0.6f);
+    m_labelMax->setPosition({215.f, y2 - 24.f});
+    m_labelOptions->addChild(m_labelMax);
+    m_labelMaxValue = CCLabelBMFont::create("", "bigFont.fnt");
+    m_labelMaxValue->setScale(0.25f);
+    m_labelMaxValue->setColor({200, 200, 200});
+    m_labelMaxValue->setPosition({215.f, y2 - 35.f});
+    m_labelOptions->addChild(m_labelMaxValue);
+    y2 -= 26.f;
+
     addToggle("Show test player hitboxes", "show-test-players", y2 - 26.f, m_mainLayer, menu, nullptr);
     auto note = CCLabelBMFont::create("(the hidden test players that measure each click - leave off)", "chatFont.fnt");
     note->setScale(0.45f);
@@ -135,6 +157,13 @@ bool OverlayPopup::init() {
 
 void OverlayPopup::updateVisibility() {
     m_overlayOptions->setVisible(Mod::get()->getSettingValue<bool>("enabled"));
+    if (m_labelOptions) m_labelOptions->setVisible(Mod::get()->getSettingValue<bool>("show-level-labels"));
+}
+
+void OverlayPopup::onLabelMax(CCObject* sender) {
+    float v = std::round(kLabelMaxLo + thumbValue(sender) * (kLabelMaxHi - kLabelMaxLo));
+    Mod::get()->setSettingValue<double>("level-labels-max", v);
+    m_labelMaxValue->setString(fmt::format("{:.0f} frames", v).c_str());
 }
 
 void OverlayPopup::syncSliders() {
@@ -148,6 +177,11 @@ void OverlayPopup::syncSliders() {
     m_opacity->setValue(static_cast<float>(opacity) / 255.f);
     m_sizeValue->setString(fmt::format("{:.0f}%", scale * 100.f).c_str());
     m_opacityValue->setString(fmt::format("{:.0f}%", opacity / 2.55f).c_str());
+    if (m_labelMax) {
+        double lm = Mod::get()->getSettingValue<double>("level-labels-max");
+        m_labelMax->setValue(static_cast<float>((lm - kLabelMaxLo) / (kLabelMaxHi - kLabelMaxLo)));
+        m_labelMaxValue->setString(fmt::format("{:.0f} frames", lm).c_str());
+    }
 }
 
 void OverlayPopup::applyHud() {

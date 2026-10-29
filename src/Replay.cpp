@@ -50,7 +50,7 @@ void Replay::begin(PlayLayer* pl) {
     m_pending = false;
     if (!pl || !pl->m_player1 || !m_run.replay || m_run.replay->empty()) return;
     // a run started from a practice checkpoint can't be replayed from the start
-    if (std::abs(pl->m_player1->m_position.x - m_run.startX) > 2.f) {
+    if (std::abs(pl->m_player1->getPositionX() - m_run.startX) > 2.f) {
         FLAlertLayer::create(
             "Frame Window Counter",
             "This run started from a <cy>practice checkpoint</c>, so it can't be replayed from the start of the level.",
@@ -125,8 +125,8 @@ void Replay::onTickStart(PlayLayer* pl) {
     // keep the player exactly on the recorded path
     if (m_tick > 0 && m_tick - 1 < static_cast<int>(frames.size())) {
         auto const& f = frames[m_tick - 1];
-        if (std::abs(p->m_position.y - f.y) > 0.01f || std::abs(p->m_position.x - f.x) > 0.5f) {
-            p->m_position = CCPoint(f.x, f.y);
+        auto pos = p->getPosition();
+        if (std::abs(pos.y - f.y) > 0.01f || std::abs(pos.x - f.x) > 0.5f) {
             p->setPosition({f.x, f.y});
             p->m_yVelocity = f.vy;
         }

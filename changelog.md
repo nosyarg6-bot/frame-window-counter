@@ -1,3 +1,9 @@
+# v1.6.0
+- Big accuracy fix: the mod compared positions using a field the game only updates once in a while, so every test player looked like it was drifting 50-250 units away from your real run (seen in your logs). It now uses the real position. This is what broke ship windows, made results show up late, and gave open-space clicks numbers.
+- Test players never report a "death" to the game anymore (only the mod's own spike/saw/block check), so MegaHack's hitboxes on death no longer pop up after every click.
+- The report opens by itself when you beat a level (separate from the level complete screen, so it works with mods that hide it). Setting: Open Report On Level Complete.
+- Frame windows in the level only pop up once known, and only up to a max you choose (Overlay Settings, under "Show frame windows in the level").
+
 # v1.5.0
 - Test players now copy the game's "last position" and do the end-of-step rotation update like the real game. Without these they drifted away from your real run on every click (the log showed it), which broke ship windows and made spike jumps read wrong.
 - Open space: if nothing but your neighbouring clicks limits an input, it's "free".

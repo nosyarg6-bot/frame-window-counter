@@ -269,6 +269,18 @@ class $modify(FWPlayLayer, PlayLayer) {
     void levelComplete() {
         Tracker::get().finishRun(this, true);
         PlayLayer::levelComplete();
+        // open the report by itself, separate from the level complete screen
+        // (works even if another mod hides that screen)
+        if (Mod::get()->getSettingValue<bool>("report-on-complete") && !fw::Replay::get().active()) {
+            this->runAction(CCSequence::create(
+                CCDelayTime::create(1.3f),
+                CallFuncExt::create([]() {
+                    if (!PlayLayer::get()) return;
+                    if (auto popup = fw::ReportPopup::create()) popup->show();
+                }),
+                nullptr
+            ));
+        }
     }
 
     void onQuit() {

@@ -20,6 +20,7 @@ protected:
     void onY(cocos2d::CCObject* sender);
     void onSize(cocos2d::CCObject* sender);
     void onOpacity(cocos2d::CCObject* sender);
+    void onLabelMax(cocos2d::CCObject* sender);
     void syncSliders();
     void applyHud();
 
@@ -30,6 +31,9 @@ protected:
     Slider* m_opacity = nullptr;
     cocos2d::CCLabelBMFont* m_sizeValue = nullptr;
     cocos2d::CCLabelBMFont* m_opacityValue = nullptr;
+    cocos2d::CCNode* m_labelOptions = nullptr;
+    Slider* m_labelMax = nullptr;
+    cocos2d::CCLabelBMFont* m_labelMaxValue = nullptr;
 };
 
 } // namespace fw
