@@ -26,7 +26,7 @@ The mod depends on `geode.node-ids` (used to put the button in the pause menu). 
   - Colours: magenta 0-1, red 1-2, orange 2-3, yellow 3-4, green 4-6, cyan 6-10, grey 10+ / free.
   - `...` = still being measured (it needs about 0.75 s of the future trajectory), `free` = more leeway than the max window setting, `*` = you died before that input could be fully measured.
 - **Death**: the counter resets. The overlay switches to a summary of the run you just finished until your next click.
-- **Report**: pause, then press the green stats button on the right. It lists every input of the current and previous runs (arrows switch between runs) with a count per difficulty.
+- **Report**: pause, then press the green stats button on the right. **Watch Replay** restarts the level and plays one of your last 5 runs back, showing each input's window as it happens (your own inputs are paused until it ends). The **Overlay** checkbox turns the in-game overlay on or off. It lists every input of the current and previous runs (arrows switch between runs) with a count per difficulty.
 - **Move the overlay**: in the report press **Move Overlay**, drag the blue box, press **Done**. **Reset** puts it back in the corner.
 - **Settings** (Geode mod settings): rows shown, scale, opacity, early/late display, max window, inner hitbox size, open report on death, history size.
 

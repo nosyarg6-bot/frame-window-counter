@@ -4,6 +4,7 @@
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/GJGameLevel.hpp>
 #include <Geode/binding/HardStreak.hpp>
+#include <Geode/binding/OBB2D.hpp>
 #include <Geode/binding/PlayLayer.hpp>
 #include <Geode/binding/PlayerObject.hpp>
 
@@ -130,6 +131,81 @@ static std::string killerName(GameObject* obj) {
 }
 
 // ---------------------------------------------------------------------------
+// hit detection (same shapes the game uses: boxes, rotated boxes, circles)
+
+static constexpr int kHitGrace = 6; // steps to wait before a hit counts as a death
+
+static OBB2D* scratchOBB() {
+    static OBB2D* box = nullptr;
+    if (!box) {
+        box = OBB2D::create({0.f, 0.f}, 1.f, 1.f, 0.f);
+        if (box) box->retain();
+    }
+    return box;
+}
+
+static bool rectHitsCircle(CCRect const& r, CCPoint c, float radius) {
+    float nx = std::clamp(c.x, r.getMinX(), r.getMaxX());
+    float ny = std::clamp(c.y, r.getMinY(), r.getMaxY());
+    float dx = c.x - nx, dy = c.y - ny;
+    return dx * dx + dy * dy < radius * radius;
+}
+
+static bool rectHitsObject(CCRect const& pr, GameObject* obj) {
+    auto const& orect = obj->getObjectRect();
+    if (orect.size.width <= 0.f || orect.size.height <= 0.f) return false;
+    if (!overlaps(pr, orect)) return false; // bounding boxes don't even touch
+    if (obj->m_objectRadius > 0.f) {
+        float r = std::min(orect.size.width, orect.size.height) * 0.5f;
+        return rectHitsCircle(pr, {orect.getMidX(), orect.getMidY()}, r);
+    }
+    float rot = std::fmod(std::abs(obj->getRotation()), 90.f);
+    if (rot > 0.01f && rot < 89.99f) {
+        auto ob = obj->getOrientedBox();
+        auto pb = scratchOBB();
+        if (ob && pb) {
+            pb->calculateWithCenter({pr.getMidX(), pr.getMidY()}, pr.size.width, pr.size.height, 0.f);
+            return pb->overlaps1Way(ob) && ob->overlaps1Way(pb);
+        }
+    }
+    return true;
+}
+
+bool Tracker::hitsPlayer(PlayerObject* p, GameObject* obj) {
+    if (!obj || obj->m_isNoTouch || obj->m_isPassable || obj->m_isDisabled || obj->m_isGroupDisabled) return false;
+    auto t = obj->m_objectType;
+    if (t == GameObjectType::Hazard || t == GameObjectType::AnimatedHazard) {
+        return rectHitsObject(p->getObjectRect(), obj);
+    }
+    if (t == GameObjectType::Solid) {
+        // blocks kill when they reach the small inner hitbox
+        auto inner = p->getObjectRect(0.3f, 0.3f);
+        return overlaps(inner, obj->getObjectRect());
+    }
+    return false;
+}
+
+void Tracker::onCollisionList(PlayerObject* p, gd::vector<GameObject*>* objs, int count) {
+    if (!m_running || !p || !objs) return;
+    if (m_simulating) {
+        if (!m_curGhost || m_curGhost->obj != p) return;
+        for (int i = 0; i < count; ++i) {
+            auto o = objs->at(i);
+            if (hitsPlayer(p, o)) onGhostDeath(p, o);
+        }
+        return;
+    }
+    // your real player: anything the check flags while you live is a false alarm,
+    // so test players ignore it too
+    auto pl = PlayLayer::get();
+    if (!pl || p != pl->m_player1 || p->m_isDead) return;
+    for (int i = 0; i < count; ++i) {
+        auto o = objs->at(i);
+        if (o && hitsPlayer(p, o)) m_realFalseHits.insert(o);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // test player objects
 
 void Tracker::hidePlayer(PlayerObject* p) {
@@ -229,12 +305,42 @@ int Tracker::liveGhostCount() const {
     return n;
 }
 
+// A test player touched something deadly. It keeps going (like noclip) and the
+// hit only becomes a death if your own run didn't touch the same thing.
 void Tracker::onGhostDeath(PlayerObject* p, GameObject* killer) {
-    if (m_curGhost && m_curGhost->obj == p && m_curGhost->status == GStatus::Alive) {
-        m_curGhost->status = GStatus::Dead;
-        m_curGhost->deathTick = m_stepTick;
-        m_curGhost->killer = killer;
+    if (!m_curGhost || m_curGhost->obj != p || m_curGhost->status != GStatus::Alive) return;
+    for (auto const& h : m_curGhost->hits) {
+        if (h.first == killer) return;
     }
+    m_curGhost->hits.push_back({killer, m_stepTick});
+}
+
+void Tracker::resolveHits(Group& grp, int t) {
+    // the copy of your exact run never dies; whatever it "hit", you survived
+    for (auto const& h : grp.baseline.hits) {
+        grp.baselineHits.insert(h.first);
+        grp.baselineMismatch = true;
+    }
+    grp.baseline.hits.clear();
+
+    forEachGhost(grp, [&](Ghost& g) {
+        if (&g == &grp.baseline || g.status != GStatus::Alive) return;
+        for (size_t i = 0; i < g.hits.size();) {
+            auto obj = g.hits[i].first;
+            if (m_realFalseHits.count(obj) || grp.baselineHits.count(obj)) {
+                g.hits.erase(g.hits.begin() + i);
+                continue;
+            }
+            if (t - g.hits[i].second >= kHitGrace) {
+                g.status = GStatus::Dead;
+                g.killer = obj;
+                g.deathTick = g.hits[i].second;
+                releaseObj(g);
+                return;
+            }
+            ++i;
+        }
+    });
 }
 
 Tracker::RealState Tracker::readState(PlayerObject* p) const {
@@ -276,6 +382,10 @@ void Tracker::startRun(PlayLayer* pl) {
     finishAllGroups(pl, true, true);
 
     m_current = RunRecord{};
+    m_current.replay = std::make_shared<std::vector<ReplayFrame>>();
+    m_current.replay->reserve(240 * 30);
+    if (pl->m_player1) m_current.startX = pl->m_player1->m_position.x;
+    m_realFalseHits.clear();
     if (pl->m_level) m_current.levelName = std::string(pl->m_level->m_levelName);
     m_current.attempt = pl->m_attempts;
     m_current.practice = pl->m_isPracticeMode;
@@ -301,6 +411,15 @@ void Tracker::startRun(PlayLayer* pl) {
     bump();
 }
 
+void Tracker::stopForReplay(PlayLayer* pl) {
+    if (m_running) finishRun(pl, false);
+    finishAllGroups(pl, true, true);
+    m_running = false;
+    m_pending.clear();
+    if (m_drawNode) m_drawNode->clear();
+    bump();
+}
+
 void Tracker::finishRun(PlayLayer* pl, bool completed) {
     if (!m_running) return;
     finishAllGroups(pl, !completed, true);
@@ -317,6 +436,7 @@ void Tracker::finishRun(PlayLayer* pl, bool completed) {
         m_history.push_front(m_current);
         size_t maxRuns = static_cast<size_t>(std::max<int64_t>(1, Mod::get()->getSettingValue<int64_t>("history-size")));
         while (m_history.size() > maxRuns) m_history.pop_back();
+        for (size_t i = 5; i < m_history.size(); ++i) m_history[i].replay.reset();
         m_showLastRun = true;
     }
     if (m_drawNode) m_drawNode->clear();
@@ -533,10 +653,6 @@ void Tracker::createGroup(PlayLayer* pl, size_t idx, int t) {
         }
         offs.swap(thin);
     }
-    if (static_cast<int>(offs.size()) * 2 + 2 > available) {
-        rec.state = EvalState::Unknown;
-        return;
-    }
 
     m_groups.emplace_back();
     Group& grp = m_groups.back();
@@ -585,7 +701,15 @@ void Tracker::createGroup(PlayLayer* pl, size_t idx, int t) {
         addPastInputs(g, idx, s, g.fireTime);
         insertEvent(g, {g.fireTime, grp.press, true});
         for (int k2 = s; k2 < t && g.status == GStatus::Alive; ++k2) stepGhost(pl, g, k2);
-        if (g.status == GStatus::Dead) {
+        // you already went through this stretch, so anything you touched there is safe
+        for (size_t i = 0; i < g.hits.size();) {
+            if (m_realFalseHits.count(g.hits[i].first)) g.hits.erase(g.hits.begin() + i);
+            else ++i;
+        }
+        if (!g.hits.empty() && t - g.hits.front().second >= kHitGrace) {
+            g.status = GStatus::Dead;
+            g.killer = g.hits.front().first;
+            g.deathTick = g.hits.front().second;
             releaseObj(g);
             earlyDead = true;
         }
@@ -627,6 +751,7 @@ void Tracker::spawnLateGhosts(PlayLayer* pl, Group& grp, int t) {
             ok = spawnFromGhost(pl, g, grp.control);
             if (ok) {
                 for (auto const& ev : grp.control.events) insertEvent(g, ev);
+                g.hits = grp.control.hits;
             }
         }
         else if (grp.control.status == GStatus::Dead) {
@@ -694,7 +819,7 @@ void Tracker::evaluateGroup(PlayLayer* pl, Group& grp, RealState const& cur, int
             (std::abs(o->m_position.y - cur.y) > 2.f || std::abs(o->m_position.x - cur.x) > 2.f)) {
             grp.baselineMismatch = true;
         }
-        if ((g.fired || g.isControl) && same) {
+        if ((g.fired || g.isControl) && same && g.hits.empty()) {
             if (++g.converged >= 2) {
                 g.status = GStatus::Converged;
                 releaseObj(g);
@@ -719,7 +844,7 @@ void Tracker::evaluateGroup(PlayLayer* pl, Group& grp, RealState const& cur, int
     }
 
     bool noEffect = grp.control.status == GStatus::Converged;
-    bool baselineDead = grp.baseline.status == GStatus::Dead;
+    bool baselineDead = false;
     bool allDone = grp.baseline.status != GStatus::Alive;
     for (auto* side : {&grp.early, &grp.late}) {
         for (auto& g : *side) {
@@ -741,10 +866,6 @@ void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interr
     if (grp.control.status == GStatus::Converged) {
         rec.state = EvalState::NoEffect;
     }
-    else if (grp.baseline.status == GStatus::Dead) {
-        // the test player doing exactly what you did died, so this spot can't be simulated reliably
-        rec.state = EvalState::Unknown;
-    }
     else {
         struct SideResult {
             double edge = 0.0;
@@ -759,6 +880,14 @@ void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interr
             int lastOk = -1;
             for (size_t k = 0; k < side.size(); ++k) {
                 auto& g = side[k];
+                bool genuineHit = false;
+                for (auto const& h : g.hits) {
+                    if (!m_realFalseHits.count(h.first) && !grp.baselineHits.count(h.first)) {
+                        genuineHit = true;
+                        if (!g.killer) g.killer = h.first;
+                    }
+                }
+                if (genuineHit && g.status == GStatus::Alive) g.status = GStatus::Dead;
                 bool ok = g.status == GStatus::Alive || g.status == GStatus::Converged;
                 if (ok) {
                     lastOk = static_cast<int>(k);
@@ -820,6 +949,10 @@ void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interr
             }
         }
         rec.state = EvalState::Done;
+        log::info("#{} {} at {:.1f}%: window {:.2f} (early {:.2f}{}, late {:.2f}{}) obstacle '{}' approx={} fpt={:.3f} shifts={}",
+            rec.number, rec.press ? "click" : "release", rec.percent, rec.windowFrames,
+            rec.earlyFrames, e.capped ? " max" : "", rec.lateFrames, l.capped ? " max" : "",
+            rec.obstacle, rec.approx, grp.fpt, grp.offFrames.size());
     }
 
     forEachGhost(grp, [&](Ghost& g) { releaseObj(g); });
@@ -884,7 +1017,9 @@ void Tracker::processTick(PlayLayer* pl, int t) {
         forEachGhost(grp, [&](Ghost& g) { stepGhost(pl, g, t); });
     }
     for (auto& grp : m_groups) {
-        if (!grp.done) evaluateGroup(pl, grp, cur, t);
+        if (grp.done) continue;
+        resolveHits(grp, t);
+        evaluateGroup(pl, grp, cur, t);
     }
     while (!m_groups.empty() && m_groups.front().done) m_groups.pop_front();
     if (m_groups.size() > 64) {
@@ -894,6 +1029,11 @@ void Tracker::processTick(PlayLayer* pl, int t) {
     }
 
     drawDebug(pl);
+
+    if (m_current.replay) {
+        auto& frames = *m_current.replay;
+        if (static_cast<int>(frames.size()) == t) frames.push_back({cur.x, cur.y, cur.vy});
+    }
 
     m_prevReal = cur;
     m_hasPrevReal = true;

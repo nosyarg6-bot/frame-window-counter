@@ -9,6 +9,7 @@
 
 #include "Hud.hpp"
 #include "ReportPopup.hpp"
+#include "Replay.hpp"
 #include "Tracker.hpp"
 
 using namespace geode::prelude;
@@ -34,6 +35,14 @@ class $modify(FWBaseGameLayer, GJBaseGameLayer) {
         (void)self.setHookPriority("GJBaseGameLayer::canBeActivatedByPlayer", Priority::First);
         (void)self.setHookPriority("GJBaseGameLayer::playerTouchedRing", Priority::First);
         (void)self.setHookPriority("GJBaseGameLayer::flipGravity", Priority::First);
+        (void)self.setHookPriority("GJBaseGameLayer::handleButton", Priority::First);
+    }
+
+    // while a replay plays, only the replay presses buttons
+    void handleButton(bool down, int button, bool isPlayer1) {
+        auto& rp = fw::Replay::get();
+        if (rp.active() && !rp.injecting() && playLayerFor(this)) return;
+        GJBaseGameLayer::handleButton(down, button, isPlayer1);
     }
 
     // called once per physics tick (240 per second in 2.2)
@@ -44,16 +53,22 @@ class $modify(FWBaseGameLayer, GJBaseGameLayer) {
             return;
         }
         auto& tr = Tracker::get();
+        auto& rp = fw::Replay::get();
+        rp.onTickStart(pl);
         tr.onTickStart(pl);
         GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
         tr.onTickEnd(pl);
+        rp.onTickEnd(pl);
     }
 
     // ghosts only collide with blocks, hazards and slopes: no orbs, pads, portals,
     // triggers or coins, so they can never change the real level
     void collisionCheckObjects(PlayerObject* player, gd::vector<GameObject*>* objects, int objectCount, float dt) {
-        if (!Tracker::get().isSimulating()) {
+        auto& tr = Tracker::get();
+        if (!tr.isSimulating()) {
             GJBaseGameLayer::collisionCheckObjects(player, objects, objectCount, dt);
+            // your real player: used to recognise false alarms of the hit check
+            if (objects && playLayerFor(this)) tr.onCollisionList(player, objects, std::min<int>(objectCount, objects->size()));
             return;
         }
         static gd::vector<GameObject*> filtered;
@@ -68,6 +83,7 @@ class $modify(FWBaseGameLayer, GJBaseGameLayer) {
             }
         }
         GJBaseGameLayer::collisionCheckObjects(player, &filtered, static_cast<int>(filtered.size()), dt);
+        tr.onCollisionList(player, &filtered, static_cast<int>(filtered.size()));
     }
 
     bool canBeActivatedByPlayer(PlayerObject* player, EffectGameObject* object) {
@@ -188,6 +204,7 @@ class $modify(FWPlayLayer, PlayLayer) {
     }
 
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
+        fw::Replay::get().stop();
         Tracker::get().beginLevel(this);
         if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
         if (auto hud = fw::FrameHud::create()) {
@@ -198,6 +215,15 @@ class $modify(FWPlayLayer, PlayLayer) {
 
     void resetLevel() {
         PlayLayer::resetLevel();
+        auto& rp = fw::Replay::get();
+        if (rp.pending()) {
+            Tracker::get().stopForReplay(this);
+            rp.begin(this);
+            if (rp.active()) return;
+        }
+        else if (rp.active()) {
+            rp.stop(); // replay ended (death / restart): back to normal
+        }
         Tracker::get().startRun(this);
     }
 
@@ -234,6 +260,7 @@ class $modify(FWPlayLayer, PlayLayer) {
     }
 
     void onQuit() {
+        fw::Replay::get().stop();
         Tracker::get().endLevel(this);
         PlayLayer::onQuit();
     }

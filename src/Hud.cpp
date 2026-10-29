@@ -1,5 +1,6 @@
 #include "Hud.hpp"
 #include "Tracker.hpp"
+#include "Replay.hpp"
 
 using namespace geode::prelude;
 
@@ -101,7 +102,7 @@ void FrameHud::update(float) {
         }
     }
     if (!this->isVisible()) return;
-    int rev = Tracker::get().revision();
+    int rev = Tracker::get().revision() * 7919 + Replay::get().revision();
     if (rev != m_seenRevision) {
         m_seenRevision = rev;
         this->rebuild();
@@ -130,18 +131,24 @@ void FrameHud::rebuild() {
     auto& tr = Tracker::get();
     auto size = this->panelSize();
 
-    bool lastRun = tr.showingLastRun() && !tr.history().empty();
-    RunRecord const& run = lastRun ? tr.history().front() : tr.current();
+    auto& rp = Replay::get();
+    bool replaying = rp.active();
+    bool lastRun = !replaying && tr.showingLastRun() && !tr.history().empty();
+    RunRecord const& run = replaying ? rp.run() : lastRun ? tr.history().front() : tr.current();
+    size_t visibleInputs = replaying ? std::min<size_t>(rp.shownInputs(), run.inputs.size()) : run.inputs.size();
 
     // header
     std::string title;
-    if (lastRun) {
+    if (replaying) {
+        title = fmt::format("Replay - attempt {}", run.attempt);
+    }
+    else if (lastRun) {
         title = run.completed ? "Last run - complete!" : fmt::format("Last run - {}%", static_cast<int>(run.endPercent));
     }
     else {
         title = fmt::format("Frame Windows  (att {})", run.attempt);
     }
-    auto header = makeLabel(title, 0.32f, lastRun ? ccColor3B{255, 200, 80} : ccColor3B{255, 255, 255}, {0.f, 0.5f});
+    auto header = makeLabel(title, 0.32f, replaying ? ccColor3B{120, 220, 255} : lastRun ? ccColor3B{255, 200, 80} : ccColor3B{255, 255, 255}, {0.f, 0.5f});
     header->setPosition({kPad, size.height - kHeaderH * 0.5f - 1.f});
     header->limitLabelWidth(kWidth - kPad * 2, 0.32f, 0.1f);
     m_content->addChild(header);
@@ -149,8 +156,8 @@ void FrameHud::rebuild() {
     // rows, newest first
     float y = size.height - kHeaderH - kRowH * 0.5f;
     int shown = 0;
-    for (auto it = run.inputs.rbegin(); it != run.inputs.rend() && shown < m_rows; ++it) {
-        auto const& in = *it;
+    for (size_t i = visibleInputs; i-- > 0 && shown < m_rows;) {
+        auto const& in = run.inputs[i];
         if (!m_showIneffective && in.state == EvalState::NoEffect) continue;
 
         auto name = makeLabel(
@@ -177,7 +184,7 @@ void FrameHud::rebuild() {
     }
     if (shown == 0) {
         auto empty = makeLabel(
-            tr.hasRunInProgress() || lastRun ? "click to start..." : "waiting for level...",
+            replaying ? "replay starting..." : tr.hasRunInProgress() || lastRun ? "click to start..." : "waiting for level...",
             0.24f, {150, 150, 150}, {0.f, 0.5f}
         );
         empty->setPosition({kPad, y});
@@ -193,6 +200,7 @@ void FrameHud::rebuild() {
         footer = fmt::format("counted: {}", run.effectiveCount());
     }
     if (lastRun) footer += "   (pause > FW for report)";
+    if (replaying) footer = "replay - your inputs are paused";
     auto foot = makeLabel(footer, 0.22f, {200, 200, 200}, {0.f, 0.5f});
     foot->setPosition({kPad, kFooterH * 0.5f + 1.f});
     foot->limitLabelWidth(kWidth - kPad * 2, 0.22f, 0.1f);

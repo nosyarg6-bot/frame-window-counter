@@ -28,6 +28,8 @@ protected:
     geode::ScrollLayer* m_scroll = nullptr;
     CCMenuItemSpriteExtra* m_prevBtn = nullptr;
     CCMenuItemSpriteExtra* m_nextBtn = nullptr;
+    CCMenuItemSpriteExtra* m_replayBtn = nullptr;
+    cocos2d::CCLabelBMFont* m_replayNote = nullptr;
 };
 
 // Full-screen overlay that lets you drag the overlay to a new position.

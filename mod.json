@@ -8,7 +8,7 @@
 	},
 	"id": "nosyarg.frame-window-counter",
 	"name": "Frame Window Counter",
-	"version": "v1.2.0",
+	"version": "v1.3.0",
 	"developer": "nosyarg",
 	"description": "Automatically shows how many 240 FPS frames of leeway every click and release had.",
 	"tags": ["gameplay", "utility", "interface"],

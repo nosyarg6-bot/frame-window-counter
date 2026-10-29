@@ -1,3 +1,9 @@
+# v1.3.0
+- Much more accurate: spikes, saws and blocks are checked with the game's own hitbox shapes (boxes, rotated boxes, circles) on top of the game's death check, so test players can't pass through obstacles anymore (fixes 20-30 frame results on 1-3 frame clicks).
+- A hit only counts if your real run didn't touch the same object, so simulation hiccups no longer produce "?" - every click gets an estimate.
+- Watch Replay: pause > FW > pick a run > Watch Replay. The level restarts and plays your run back, showing each click and release's frame window as it happens.
+- Overlay on/off toggle in the pause menu report.
+
 # v1.2.0
 - Fixed huge windows (e.g. 20 frames on a frame perfect): test players now keep all your later inputs and must actually get past the obstacle, instead of stopping at your next click.
 - Shifted inputs can't jump past your neighbouring inputs (that used to count as surviving).

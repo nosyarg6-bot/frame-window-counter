@@ -1,5 +1,10 @@
 #include "ReportPopup.hpp"
 #include "Hud.hpp"
+#include "Replay.hpp"
+
+#include <Geode/binding/PauseLayer.hpp>
+#include <Geode/binding/PlayLayer.hpp>
+#include <Geode/binding/CCMenuItemToggler.hpp>
 
 #include <Geode/binding/ButtonSprite.hpp>
 #include <Geode/binding/CCMenuItemSpriteExtra.hpp>
@@ -124,6 +129,45 @@ bool ReportPopup::init() {
     moveBtn->setPosition({kPopupW * 0.5f, 20.f});
     menu->addChild(moveBtn);
 
+    // in-game overlay on / off
+    auto toggler = CCMenuItemExt::createTogglerWithStandardSprites(0.55f, [](CCMenuItemToggler* t) {
+        bool on = !t->isToggled();
+        Mod::get()->setSettingValue<bool>("enabled", on);
+        if (auto hud = FrameHud::get()) hud->applySettings();
+    });
+    toggler->toggle(Mod::get()->getSettingValue<bool>("enabled"));
+    toggler->setPosition({30.f, 20.f});
+    menu->addChild(toggler);
+    auto togLabel = label("Overlay", "bigFont.fnt", 0.32f);
+    togLabel->setAnchorPoint({0.f, 0.5f});
+    togLabel->setPosition({46.f, 20.f});
+    m_mainLayer->addChild(togLabel);
+
+    // replay the selected run
+    m_replayBtn = CCMenuItemExt::createSpriteExtra(
+        ButtonSprite::create("Watch Replay", "bigFont.fnt", "GJ_button_01.png", 0.6f),
+        [this](CCMenuItemSpriteExtra*) {
+            if (m_index < 0 || m_index >= static_cast<int>(m_runs.size())) return;
+            Replay::get().request(m_runs[m_index]);
+            if (!Replay::get().pending()) return;
+            this->onClose(nullptr);
+            if (auto pause = CCScene::get()->getChildByType<PauseLayer>(0)) {
+                pause->onRestartFull(nullptr);
+            }
+            else if (auto pl = PlayLayer::get()) {
+                pl->resetLevelFromStart();
+            }
+        }
+    );
+    m_replayBtn->setScale(0.7f);
+    m_replayBtn->m_baseScale = 0.7f;
+    m_replayBtn->setPosition({kPopupW - 70.f, 20.f});
+    menu->addChild(m_replayBtn);
+
+    m_replayNote = label("", "chatFont.fnt", 0.4f, {170, 170, 170});
+    m_replayNote->setPosition({kPopupW - 70.f, 6.f});
+    m_mainLayer->addChild(m_replayNote);
+
     auto legend = label("240 FPS frames.  0-1 = needs more than 240 FPS.  ~ = estimate   * = cut short", "chatFont.fnt", 0.45f, {170, 170, 170});
     legend->setPosition({kPopupW * 0.5f, 40.f});
     m_mainLayer->addChild(legend);
@@ -141,6 +185,7 @@ void ReportPopup::showRun(int index) {
         m_infoLabel->setString("Play the level - every click and release gets measured.");
         m_prevBtn->setVisible(false);
         m_nextBtn->setVisible(false);
+        m_replayBtn->setEnabled(false);
         return;
     }
     m_index = std::clamp(index, 0, static_cast<int>(m_runs.size()) - 1);
@@ -148,6 +193,13 @@ void ReportPopup::showRun(int index) {
     m_nextBtn->setVisible(m_index < static_cast<int>(m_runs.size()) - 1);
 
     auto const& run = m_runs[m_index];
+    bool canReplay = run.finished && run.replay && !run.replay->empty() && PlayLayer::get();
+    m_replayBtn->setEnabled(canReplay);
+    if (auto spr = typeinfo_cast<ButtonSprite*>(m_replayBtn->getNormalImage())) {
+        spr->setColor(canReplay ? ccColor3B{255, 255, 255} : ccColor3B{110, 110, 110});
+        spr->setOpacity(canReplay ? 255 : 150);
+    }
+    m_replayNote->setString(canReplay ? "" : !run.finished ? "finish the run first" : "only the last 5 runs");
     m_runLabel->setString(fmt::format("{} ({}/{})", m_runNames[m_index], m_index + 1, m_runs.size()).c_str());
 
     std::string result;

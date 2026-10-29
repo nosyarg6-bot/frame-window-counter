@@ -2,6 +2,7 @@
 
 #include <Geode/Geode.hpp>
 #include <deque>
+#include <memory>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -42,7 +43,15 @@ struct InputRecord {
     bool isFree() const { return cappedEarly && cappedLate; }
 };
 
+struct ReplayFrame {
+    float x = 0.f;
+    float y = 0.f;
+    double vy = 0.0;
+};
+
 struct RunRecord {
+    std::shared_ptr<std::vector<ReplayFrame>> replay; // player state at the end of every step
+    float startX = 0.f;
     std::string levelName;
     int attempt = 0;
     float endPercent = 0.f;
@@ -79,6 +88,10 @@ public:
     bool isSimulating() const { return m_simulating; }
     bool isGhost(PlayerObject* p) const { return p && m_ghostSet.count(p); }
     void onGhostDeath(PlayerObject* p, GameObject* killer);
+    // own hit detection on the exact object list the game checks (works even if
+    // another mod swallows deaths, e.g. noclip)
+    void onCollisionList(PlayerObject* p, gd::vector<GameObject*>* objs, int count);
+    void stopForReplay(PlayLayer* pl);
 
     // data for the UI
     RunRecord const& current() const { return m_current; }
@@ -109,6 +122,7 @@ private:
         int converged = 0;
         int deathTick = -1;
         GameObject* killer = nullptr;
+        std::vector<std::pair<GameObject*, int>> hits; // possible deaths, confirmed a few steps later
         std::vector<Event> events;
         std::vector<GameObject*> usedBoosts;
     };
@@ -130,6 +144,7 @@ private:
         int horizonTick = 0;
         bool baselineMismatch = false;
         bool done = false;
+        std::unordered_set<GameObject*> baselineHits; // things the copy of your exact run "hit"
     };
 
     struct Snapshot {
@@ -199,6 +214,8 @@ private:
     int liveGhostCount() const;
     std::vector<double> buildOffsets() const;
     void drawDebug(PlayLayer* pl);
+    void resolveHits(Group& grp, int t);
+    static bool hitsPlayer(PlayerObject* p, GameObject* obj);
     void bump() { ++m_revision; }
 
     RunRecord m_current;
@@ -212,6 +229,7 @@ private:
     std::vector<PendingInput> m_pending;
     std::vector<Boost> m_rings;
     std::vector<Boost> m_pads;
+    std::unordered_set<GameObject*> m_realFalseHits; // objects the hit check flags but you survived
     cocos2d::CCDrawNode* m_drawNode = nullptr;
 
     RealState m_prevReal;
