@@ -1,7 +1,11 @@
 #include <Geode/Geode.hpp>
+#include <Geode/modify/EffectGameObject.hpp>
+#include <Geode/modify/GameObject.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
-#include <Geode/modify/PlayLayer.hpp>
+#include <Geode/modify/HardStreak.hpp>
 #include <Geode/modify/PauseLayer.hpp>
+#include <Geode/modify/PlayerObject.hpp>
+#include <Geode/modify/PlayLayer.hpp>
 
 #include "Hud.hpp"
 #include "ReportPopup.hpp"
@@ -10,16 +14,24 @@
 using namespace geode::prelude;
 using fw::Tracker;
 
-static PlayLayer* currentPlayLayerFor(GJBaseGameLayer* layer) {
+static PlayLayer* playLayerFor(GJBaseGameLayer* layer) {
     auto pl = PlayLayer::get();
     if (pl && static_cast<GJBaseGameLayer*>(pl) == layer) return pl;
     return nullptr; // editor playtest or something else
 }
 
+static bool isRealPlayer1(PlayerObject* p) {
+    auto pl = PlayLayer::get();
+    return pl && p == pl->m_player1 && !Tracker::get().isSimulating();
+}
+
+// ---------------------------------------------------------------------------
+// physics tick + collision filtering for ghosts
+
 class $modify(FWBaseGameLayer, GJBaseGameLayer) {
     // called once per physics tick (240 per second in 2.2)
     void processCommands(float dt, bool isHalfTick, bool isLastTick) {
-        auto pl = currentPlayLayerFor(this);
+        auto pl = playLayerFor(this);
         if (!pl) {
             GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
             return;
@@ -30,20 +42,124 @@ class $modify(FWBaseGameLayer, GJBaseGameLayer) {
         tr.onTickEnd(pl);
     }
 
-    void handleButton(bool down, int button, bool isPlayer1) {
-        GJBaseGameLayer::handleButton(down, button, isPlayer1);
-        // button 1 = jump. Only player 1 is tracked.
-        if (button != 1 || !isPlayer1) return;
-        if (auto pl = currentPlayLayerFor(this)) {
-            Tracker::get().onButton(pl, down);
+    // ghosts only collide with blocks, hazards and slopes: no orbs, pads, portals,
+    // triggers or coins, so they can never change the real level
+    void collisionCheckObjects(PlayerObject* player, gd::vector<GameObject*>* objects, int objectCount, float dt) {
+        if (!Tracker::get().isSimulating()) {
+            GJBaseGameLayer::collisionCheckObjects(player, objects, objectCount, dt);
+            return;
         }
+        gd::vector<GameObject*> filtered;
+        for (int i = 0; i < objectCount; ++i) {
+            auto obj = objects->at(i);
+            if (!obj) continue;
+            auto t = obj->m_objectType;
+            if (t == GameObjectType::Solid || t == GameObjectType::Hazard ||
+                t == GameObjectType::AnimatedHazard || t == GameObjectType::Slope) {
+                filtered.push_back(obj);
+            }
+        }
+        GJBaseGameLayer::collisionCheckObjects(player, &filtered, static_cast<int>(filtered.size()), dt);
+    }
+
+    bool canBeActivatedByPlayer(PlayerObject* player, EffectGameObject* object) {
+        if (Tracker::get().isSimulating()) return false;
+        return GJBaseGameLayer::canBeActivatedByPlayer(player, object);
+    }
+
+    void playerTouchedRing(PlayerObject* player, RingObject* ring) {
+        if (Tracker::get().isSimulating()) return;
+        GJBaseGameLayer::playerTouchedRing(player, ring);
+    }
+
+    void flipGravity(PlayerObject* player, bool flip, bool noEffects) {
+        if (Tracker::get().isSimulating()) return;
+        GJBaseGameLayer::flipGravity(player, flip, noEffects);
     }
 };
 
+// ---------------------------------------------------------------------------
+// player: catch every kind of input (mouse, any key, controller, touch)
+
+class $modify(FWPlayerObject, PlayerObject) {
+    bool pushButton(PlayerButton button) {
+        bool ret = PlayerObject::pushButton(button);
+        if (button == PlayerButton::Jump && isRealPlayer1(this)) {
+            Tracker::get().onRealButton(PlayLayer::get(), true);
+        }
+        return ret;
+    }
+
+    bool releaseButton(PlayerButton button) {
+        bool ret = PlayerObject::releaseButton(button);
+        if (button == PlayerButton::Jump && isRealPlayer1(this)) {
+            Tracker::get().onRealButton(PlayLayer::get(), false);
+        }
+        return ret;
+    }
+
+    void update(float dt) {
+        PlayerObject::update(dt);
+        if (isRealPlayer1(this)) Tracker::get().onRealUpdate(dt);
+    }
+
+    void ringJump(RingObject* ring, bool skipCheck) {
+        if (Tracker::get().isSimulating()) return;
+        if (!isRealPlayer1(this)) {
+            PlayerObject::ringJump(ring, skipCheck);
+            return;
+        }
+        double vy = m_yVelocity;
+        bool up = m_isUpsideDown;
+        bool dash = m_isDashing;
+        PlayerObject::ringJump(ring, skipCheck);
+        Tracker::get().onRealRing(ring, this, vy, up, dash);
+    }
+
+    void bumpPlayer(float bumpMod, int objectType, bool noEffects, GameObject* object) {
+        PlayerObject::bumpPlayer(bumpMod, objectType, noEffects, object);
+        if (isRealPlayer1(this)) Tracker::get().onRealPad(object, this);
+    }
+
+    void playSpiderDashEffect(cocos2d::CCPoint from, cocos2d::CCPoint to) {
+        if (Tracker::get().isSimulating()) return;
+        PlayerObject::playSpiderDashEffect(from, to);
+    }
+
+    void incrementJumps() {
+        if (Tracker::get().isSimulating()) return; // don't add ghost jumps to your stats
+        PlayerObject::incrementJumps();
+    }
+};
+
+class $modify(FWHardStreak, HardStreak) {
+    void addPoint(cocos2d::CCPoint point) {
+        if (Tracker::get().isSimulating()) return; // no wave trail for ghosts
+        HardStreak::addPoint(point);
+    }
+};
+
+class $modify(FWEffectGameObject, EffectGameObject) {
+    void triggerObject(GJBaseGameLayer* layer, int uniqueID, gd::vector<int> const* remapKeys) {
+        if (Tracker::get().isSimulating()) return;
+        EffectGameObject::triggerObject(layer, uniqueID, remapKeys);
+    }
+};
+
+class $modify(FWGameObject, GameObject) {
+    void playShineEffect() {
+        if (Tracker::get().isSimulating()) return;
+        GameObject::playShineEffect();
+    }
+};
+
+// ---------------------------------------------------------------------------
+// level lifecycle
+
 class $modify(FWPlayLayer, PlayLayer) {
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
-        if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
         Tracker::get().beginLevel(this);
+        if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
         if (auto hud = fw::FrameHud::create()) {
             this->addChild(hud, 1000);
         }
@@ -56,22 +172,30 @@ class $modify(FWPlayLayer, PlayLayer) {
     }
 
     void destroyPlayer(PlayerObject* player, GameObject* object) {
-        // the game "kills" you with a hidden anti-cheat spike when the level loads; ignore it
+        auto& tr = Tracker::get();
+        // a ghost hit something: that timing fails, nothing happens in the real game
+        if (tr.isGhost(player)) {
+            tr.onGhostDeath(player);
+            return;
+        }
+        // the hidden anti-cheat spike at level start
         if (object == m_anticheatSpike) {
             PlayLayer::destroyPlayer(player, object);
             return;
         }
         PlayLayer::destroyPlayer(player, object);
         // noclip mods stop the death, so check that it really happened
-        if (player == m_player1 && m_player1 && m_player1->m_isDead) {
-            auto& tr = Tracker::get();
-            if (tr.hasRunInProgress()) {
-                tr.finishRun(this, false);
-                if (Mod::get()->getSettingValue<bool>("report-on-death") && !tr.history().empty()) {
-                    if (auto popup = fw::ReportPopup::create()) popup->show();
-                }
+        if (player == m_player1 && m_player1 && m_player1->m_isDead && tr.hasRunInProgress()) {
+            tr.finishRun(this, false);
+            if (Mod::get()->getSettingValue<bool>("report-on-death") && !tr.history().empty()) {
+                if (auto popup = fw::ReportPopup::create()) popup->show();
             }
         }
+    }
+
+    void playEndAnimationToPos(cocos2d::CCPoint position) {
+        if (Tracker::get().isSimulating()) return;
+        PlayLayer::playEndAnimationToPos(position);
     }
 
     void levelComplete() {
@@ -84,6 +208,9 @@ class $modify(FWPlayLayer, PlayLayer) {
         PlayLayer::onQuit();
     }
 };
+
+// ---------------------------------------------------------------------------
+// pause menu button
 
 class $modify(FWPauseLayer, PauseLayer) {
     void customSetup() {
@@ -103,7 +230,6 @@ class $modify(FWPauseLayer, PauseLayer) {
             menu->updateLayout();
         }
         else {
-            // fallback if node IDs are missing
             auto win = CCDirector::get()->getWinSize();
             auto menu2 = CCMenu::create();
             menu2->setPosition({win.width - 30.f, win.height * 0.5f});

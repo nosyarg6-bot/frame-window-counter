@@ -12,5 +12,5 @@ Geometry Dash 2.2 runs its physics at 240 ticks per second, so one frame here is
 - **Report** button in the pause menu: every input of your current and previous runs, with a breakdown by difficulty.
 - Drag the overlay anywhere with **Move Overlay** in the report.
 
-## Notes
-The window is estimated from your real trajectory and the hazards around it (not a full re-simulation), so orbs, pads, portals and moving objects are approximate. Inputs that changed nothing (releasing as the cube, mid-air clicks) are hidden by default. Platformer levels are not supported.
+## How it works
+Like testing with a macro bot: invisible copies of your player redo each input slightly earlier and later using the game's own physics, and the window is shown once you've passed the obstacle. Works with mouse, keyboard, controller and touch. `~` marks results that depended on orbs/pads. Platformer levels are not supported.

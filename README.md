@@ -32,19 +32,23 @@ The mod depends on `geode.node-ids` (used to put the button in the pause menu). 
 
 ## How the window is calculated
 
-1. Every physics tick (240/s) the mod records player 1's position and hitbox; every click/release is stamped with its tick.
-2. To test an input moved by `d` ticks, it rebuilds the trajectory: horizontal position comes from your real run (x movement doesn't depend on inputs); before the moved input the player keeps doing what it was doing; after it, the player follows the same vertical curve the real input produced, starting from the new point. After the next real input, the height difference carries over until the player lands.
-3. That path is tested against spikes/hazards (full hitbox) and blocks (inner hitbox). Things your real run touched safely (the floor, blocks you slid on) are ignored.
-4. It steps outwards from your real timing in 0.25-frame steps until the path dies. The surviving range is the window.
+The same way you'd test it by hand with a macro bot, but automatically and live:
 
-Tested against a brute-force simulation of a cube triple spike at 1x speed: true leeway 10 ticks, estimated 10.0 frames.
+1. Every physics tick (240/s) the mod saves a copy of player 1.
+2. When you click or release, it spawns invisible "ghost" players from those copies. Each one does your input a little earlier or later (half-frame steps by default), then runs on **Geometry Dash's own physics and collision code**, in step with you, through the obstacles ahead.
+3. A ghost's result is final when it dies, when it ends up in exactly the same state as you, when you make your next input that matters, or when you go through a portal. That's why a window shows `...` until you've actually passed the obstacle it was for.
+4. The surviving range of timings around your real one is the window, in 240 FPS frames. `1-2` means between 1 and 2 frames of room, like NanGD's videos (the exact frame count depends on alignment).
+
+Every input that reaches the player counts: mouse, any key, controller or touch.
+
+Ghosts never touch orbs, pads, triggers or coins (so they can't change the real level). When a ghost touches an orb or pad that **you** used, it gets the same boost you got. Results that rely on this, or where the simulation didn't exactly reproduce your run, are marked with `~`.
 
 ### Limitations
-- It is a model of your trajectory, not a full re-run of the game. Orbs, pads, portals, moving objects, slopes and rotated hitboxes are approximate, so treat odd numbers on those as rough.
-- Only player 1 is tracked; dual mode measures the top player only.
-- Platformer levels and sideways (rotated) gameplay are not measured.
-- Inputs that changed nothing (cube releases, mid-air clicks, buffered clicks) are hidden by default; turn on "List Inputs With No Effect" to see them.
-- If you use a TPS bypass, set "Physics Ticks Per Second" to match.
+- Only player 1 is tracked; in dual mode the top player is measured.
+- Platformer levels aren't measured.
+- Dash orbs, spider orbs/pads and teleport orbs are approximate (`~`).
+- Releases are only measured where they matter (ship, wave, robot). Cube releases show `-`.
+- If it lags on your device, lower **Max Simulated Players** or set **Precision** to 1 frame.
 
 ## Files
 
@@ -52,7 +56,7 @@ Tested against a brute-force simulation of a cube triple spike at 1x speed: true
 mod.json                     mod metadata + settings
 CMakeLists.txt               build script
 src/main.cpp                 game hooks (ticks, inputs, death, reset, pause menu button)
-src/Tracker.hpp/.cpp         recording + frame window calculation
+src/Tracker.hpp/.cpp         snapshots, ghost players, frame window calculation
 src/Hud.hpp/.cpp             the in-game overlay
 src/ReportPopup.hpp/.cpp     run report popup + drag-to-move overlay screen
 about.md / changelog.md      shown on the Geode mod page

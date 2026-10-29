@@ -98,7 +98,7 @@ bool ReportPopup::init() {
     };
     addHeader("#", 8.f, 0.f);
     addHeader("Input", 40.f, 0.f);
-    addHeader("At", 130.f, 0.f);
+    addHeader("Click > Passed", 108.f, 0.f);
     addHeader("Window", 250.f, 0.5f);
     addHeader("Early", 320.f, 0.5f);
     addHeader("Late", 375.f, 0.5f);
@@ -124,7 +124,7 @@ bool ReportPopup::init() {
     moveBtn->setPosition({kPopupW * 0.5f, 20.f});
     menu->addChild(moveBtn);
 
-    auto legend = label("Frames are 240 FPS ticks.  * = run ended before the click finished", "chatFont.fnt", 0.45f, {170, 170, 170});
+    auto legend = label("Frames are 240 FPS.  ~ = orb/pad estimate   * = died before it was passed", "chatFont.fnt", 0.45f, {170, 170, 170});
     legend->setPosition({kPopupW * 0.5f, 40.f});
     m_mainLayer->addChild(legend);
 
@@ -232,7 +232,8 @@ void ReportPopup::buildList(RunRecord const& run) {
         };
         add(std::to_string(in->number), 8.f, 0.f, {200, 200, 200});
         add(in->press ? "Click" : "Release", 40.f, 0.f, in->press ? ccColor3B{255, 255, 255} : ccColor3B{170, 190, 255});
-        add(fmt::format("{:.1f}%", in->percent), 130.f, 0.f, {200, 200, 200});
+        add(in->state == EvalState::Done ? fmt::format("{:.1f}% > {:.1f}%", in->percent, in->passedPercent)
+                                         : fmt::format("{:.1f}%", in->percent), 108.f, 0.f, {200, 200, 200});
 
         std::string win = windowLabel(*in);
         if (in->state == EvalState::Done && !in->isFree()) win += " frames";
