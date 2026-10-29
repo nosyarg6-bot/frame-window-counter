@@ -26,9 +26,8 @@ The mod depends on `geode.node-ids` (used to put the button in the pause menu). 
   - Colours: magenta 0-1, red 1-2, orange 2-3, yellow 3-4, green 4-6, cyan 6-10, grey 10+ / free.
   - `...` = still being measured (it needs about 0.75 s of the future trajectory), `free` = more leeway than the max window setting, `*` = you died before that input could be fully measured.
 - **Death**: the counter resets. The overlay switches to a summary of the run you just finished until your next click.
-- **Report**: pause, then press the green stats button on the right. **Watch Replay** restarts the level and plays one of your last 5 runs back, showing each input's window as it happens (your own inputs are paused until it ends). The **Overlay** checkbox turns the in-game overlay on or off. It lists every input of the current and previous runs (arrows switch between runs) with a count per difficulty.
-- **Move the overlay**: in the report press **Move Overlay**, drag the blue box, press **Done**. **Reset** puts it back in the corner.
-- **Settings** (Geode mod settings): rows shown, scale, opacity, early/late display, max window, inner hitbox size, open report on death, history size.
+- **Report**: pause, then press the green stats button on the right. **Watch Replay** restarts the level and plays one of your last 5 runs back, showing each input's window above the player as it happens. During a replay: **left / right arrow** = 5 seconds back / forward, the **scroll bar** at the bottom seeks anywhere, **Exit** ends it, and it stays on the last frame when the run ends. **Overlay Settings** turns the overlay on or off and (when on) sets its position, size and background opacity; it also has *Show frame windows in the level* and *Hide test player hitboxes near obstacles*. It lists every input of the current and previous runs (arrows switch between runs) with a count per difficulty.
+- **Settings** (Geode mod settings): rows shown, scale, opacity, early/late display, max window, precision, check ahead, max test players, open report on death, history size.
 
 ## How the window is calculated
 
@@ -36,7 +35,7 @@ It works like testing a macro: take one input, move it earlier or later, keep **
 
 1. Every physics step the mod saves a full copy of player 1's physics state.
 2. When you click or release, hidden test players are spawned from those copies. Each one does that input shifted by a fraction of a 240 FPS frame (quarter-frame steps near your timing, coarser for big windows). It then runs on **Geometry Dash's own physics and collision code**, step by step alongside you, and gets all of your later inputs at their real times.
-3. A shifted timing **fails** if its test player dies; the report remembers what killed it (spike, block, saw...). It **works** if the test player ends up in exactly the same state as you, or is still alive after the Check Ahead time (1 s by default).
+3. A shifted timing **fails** if its test player goes into a spike, saw or block clearly deeper than your real run did (your run may graze a hitbox and survive, so only going further than you counts); the report remembers what killed it (spike, block, saw...). It **works** if the test player ends up in exactly the same state as you, or is still alive after the Check Ahead time **and** after the obstacles of your next 3 inputs (look-ahead).
 4. The window is the range of timings around yours that work, in **240 FPS frames of real time**. That's independent of your FPS, physics bypass / TPS or time warp, so everyone gets the same numbers.
    - `0-1`: less than one 240 FPS frame. It needs more than 240 FPS (or luck) to hit.
    - `1-2`: at 240 FPS you get 1 or 2 frames to hit it, depending on alignment.

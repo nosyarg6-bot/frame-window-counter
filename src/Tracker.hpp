@@ -4,6 +4,7 @@
 #include <deque>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -87,7 +88,7 @@ public:
     // test player simulation (used by the side-effect hooks)
     bool isSimulating() const { return m_simulating; }
     bool isGhost(PlayerObject* p) const { return p && m_ghostSet.count(p); }
-    void onGhostDeath(PlayerObject* p, GameObject* killer);
+    void onGhostDeath(PlayerObject* p, GameObject* killer, float depth = -1.f);
     // own hit detection on the exact object list the game checks (works even if
     // another mod swallows deaths, e.g. noclip)
     void onCollisionList(PlayerObject* p, gd::vector<GameObject*>* objs, int count);
@@ -122,7 +123,8 @@ private:
         int converged = 0;
         int deathTick = -1;
         GameObject* killer = nullptr;
-        std::vector<std::pair<GameObject*, int>> hits; // possible deaths, confirmed a few steps later
+        struct Hit { GameObject* obj; int tick; float depth; };
+        std::vector<Hit> hits; // possible deaths, confirmed a few steps later
         std::vector<Event> events;
         std::vector<GameObject*> usedBoosts;
     };
@@ -144,7 +146,9 @@ private:
         int horizonTick = 0;
         bool baselineMismatch = false;
         bool done = false;
-        std::unordered_set<GameObject*> baselineHits; // things the copy of your exact run "hit"
+        std::unordered_map<GameObject*, float> baselineDepth; // how deep the copy of your exact run went into things
+        int inputsAhead = 0;
+        int startTick = 0;
     };
 
     struct Snapshot {
@@ -214,8 +218,12 @@ private:
     int liveGhostCount() const;
     std::vector<double> buildOffsets() const;
     void drawDebug(PlayLayer* pl);
+    void spawnLiveLabel(PlayLayer* pl, size_t idx, float x, float y);
+    void finishLiveLabel(size_t idx);
+    void clearLiveLabels();
     void resolveHits(Group& grp, int t);
-    static bool hitsPlayer(PlayerObject* p, GameObject* obj);
+    static float hitDepth(PlayerObject* p, GameObject* obj);
+    bool isGenuine(Ghost::Hit const& h, Group const& grp) const;
     void bump() { ++m_revision; }
 
     RunRecord m_current;
@@ -229,8 +237,10 @@ private:
     std::vector<PendingInput> m_pending;
     std::vector<Boost> m_rings;
     std::vector<Boost> m_pads;
-    std::unordered_set<GameObject*> m_realFalseHits; // objects the hit check flags but you survived
+    std::unordered_map<GameObject*, float> m_realDepth; // how deep your real (surviving) run went into things
     cocos2d::CCDrawNode* m_drawNode = nullptr;
+    cocos2d::CCLayer* m_ghostRoot = nullptr; // invisible home for test players (hitbox drawers can't see them)
+    std::unordered_map<size_t, cocos2d::CCLabelBMFont*> m_liveLabels;
 
     RealState m_prevReal;
     bool m_hasPrevReal = false;

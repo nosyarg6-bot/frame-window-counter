@@ -38,6 +38,12 @@ class $modify(FWBaseGameLayer, GJBaseGameLayer) {
         (void)self.setHookPriority("GJBaseGameLayer::handleButton", Priority::First);
     }
 
+    // a finished replay stays frozen on its last frame
+    void update(float dt) {
+        if (fw::Replay::get().frozen() && playLayerFor(this)) return;
+        GJBaseGameLayer::update(dt);
+    }
+
     // while a replay plays, only the replay presses buttons
     void handleButton(bool down, int button, bool isPlayer1) {
         auto& rp = fw::Replay::get();
@@ -216,6 +222,10 @@ class $modify(FWPlayLayer, PlayLayer) {
     void resetLevel() {
         PlayLayer::resetLevel();
         auto& rp = fw::Replay::get();
+        if (rp.restarting()) {
+            rp.onRestarted(); // seeking backwards in a replay
+            return;
+        }
         if (rp.pending()) {
             Tracker::get().stopForReplay(this);
             rp.begin(this);
@@ -234,6 +244,8 @@ class $modify(FWPlayLayer, PlayLayer) {
             tr.onGhostDeath(player, object);
             return;
         }
+        // during a replay the recorded path decides what happens
+        if (fw::Replay::get().active() && player == m_player1) return;
         // the hidden anti-cheat spike at level start
         if (object == m_anticheatSpike) {
             PlayLayer::destroyPlayer(player, object);
@@ -293,5 +305,27 @@ class $modify(FWPauseLayer, PauseLayer) {
             menu2->addChild(btn);
             this->addChild(menu2, 10);
         }
+    }
+};
+
+// ---------------------------------------------------------------------------
+// replay keybinds: left / right arrow = 5 seconds back / forward
+
+#include <Geode/modify/CCKeyboardDispatcher.hpp>
+class $modify(FWKeyboard, cocos2d::CCKeyboardDispatcher) {
+    bool dispatchKeyboardMSG(cocos2d::enumKeyCodes key, bool isKeyDown, bool isKeyRepeat, double timestamp) {
+        auto& rp = fw::Replay::get();
+        auto pl = PlayLayer::get();
+        if (rp.active() && isKeyDown && pl && !pl->m_isPaused) {
+            if (key == cocos2d::enumKeyCodes::KEY_Left) {
+                rp.seekBySeconds(-5.f);
+                return true;
+            }
+            if (key == cocos2d::enumKeyCodes::KEY_Right) {
+                rp.seekBySeconds(5.f);
+                return true;
+            }
+        }
+        return CCKeyboardDispatcher::dispatchKeyboardMSG(key, isKeyDown, isKeyRepeat, timestamp);
     }
 };

@@ -1,6 +1,7 @@
 #include "ReportPopup.hpp"
 #include "Hud.hpp"
 #include "Replay.hpp"
+#include "OverlayPopup.hpp"
 
 #include <Geode/binding/PauseLayer.hpp>
 #include <Geode/binding/PlayLayer.hpp>
@@ -117,31 +118,16 @@ bool ReportPopup::init() {
     m_mainLayer->addChild(m_scroll, 2);
 
     // bottom buttons
-    auto moveBtn = CCMenuItemExt::createSpriteExtra(
-        ButtonSprite::create("Move Overlay", "bigFont.fnt", "GJ_button_04.png", 0.6f),
-        [this](CCMenuItemSpriteExtra*) {
-            MoveHudLayer::open();
-            this->onClose(nullptr);
+    auto overlayBtn = CCMenuItemExt::createSpriteExtra(
+        ButtonSprite::create("Overlay Settings", "bigFont.fnt", "GJ_button_04.png", 0.6f),
+        [](CCMenuItemSpriteExtra*) {
+            if (auto popup = OverlayPopup::create()) popup->show();
         }
     );
-    moveBtn->setScale(0.7f);
-    moveBtn->m_baseScale = 0.7f;
-    moveBtn->setPosition({kPopupW * 0.5f, 20.f});
-    menu->addChild(moveBtn);
-
-    // in-game overlay on / off
-    auto toggler = CCMenuItemExt::createTogglerWithStandardSprites(0.55f, [](CCMenuItemToggler* t) {
-        bool on = !t->isToggled();
-        Mod::get()->setSettingValue<bool>("enabled", on);
-        if (auto hud = FrameHud::get()) hud->applySettings();
-    });
-    toggler->toggle(Mod::get()->getSettingValue<bool>("enabled"));
-    toggler->setPosition({30.f, 20.f});
-    menu->addChild(toggler);
-    auto togLabel = label("Overlay", "bigFont.fnt", 0.32f);
-    togLabel->setAnchorPoint({0.f, 0.5f});
-    togLabel->setPosition({46.f, 20.f});
-    m_mainLayer->addChild(togLabel);
+    overlayBtn->setScale(0.7f);
+    overlayBtn->m_baseScale = 0.7f;
+    overlayBtn->setPosition({95.f, 20.f});
+    menu->addChild(overlayBtn);
 
     // replay the selected run
     m_replayBtn = CCMenuItemExt::createSpriteExtra(
@@ -161,11 +147,11 @@ bool ReportPopup::init() {
     );
     m_replayBtn->setScale(0.7f);
     m_replayBtn->m_baseScale = 0.7f;
-    m_replayBtn->setPosition({kPopupW - 70.f, 20.f});
+    m_replayBtn->setPosition({kPopupW - 85.f, 20.f});
     menu->addChild(m_replayBtn);
 
     m_replayNote = label("", "chatFont.fnt", 0.4f, {170, 170, 170});
-    m_replayNote->setPosition({kPopupW - 70.f, 6.f});
+    m_replayNote->setPosition({kPopupW - 85.f, 6.f});
     m_mainLayer->addChild(m_replayNote);
 
     auto legend = label("240 FPS frames.  0-1 = needs more than 240 FPS.  ~ = estimate   * = cut short", "chatFont.fnt", 0.45f, {170, 170, 170});

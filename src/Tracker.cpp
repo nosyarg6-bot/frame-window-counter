@@ -1,5 +1,6 @@
 #include "Tracker.hpp"
 #include "PlayerFields.hpp"
+#include "Replay.hpp"
 
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/GJGameLevel.hpp>
@@ -144,20 +145,29 @@ static OBB2D* scratchOBB() {
     return box;
 }
 
-static bool rectHitsCircle(CCRect const& r, CCPoint c, float radius) {
-    float nx = std::clamp(c.x, r.getMinX(), r.getMaxX());
-    float ny = std::clamp(c.y, r.getMinY(), r.getMaxY());
-    float dx = c.x - nx, dy = c.y - ny;
-    return dx * dx + dy * dy < radius * radius;
+// how far two boxes overlap (0 = not touching)
+static float rectDepth(CCRect const& a, CCRect const& b) {
+    float ox = std::min(a.getMaxX(), b.getMaxX()) - std::max(a.getMinX(), b.getMinX());
+    float oy = std::min(a.getMaxY(), b.getMaxY()) - std::max(a.getMinY(), b.getMinY());
+    if (ox <= 0.f || oy <= 0.f) return 0.f;
+    return std::min(ox, oy);
 }
 
-static bool rectHitsObject(CCRect const& pr, GameObject* obj) {
+static float circleDepth(CCRect const& r, CCPoint c, float radius) {
+    float nx = std::clamp(c.x, r.getMinX(), r.getMaxX());
+    float ny = std::clamp(c.y, r.getMinY(), r.getMaxY());
+    float d = std::sqrt((c.x - nx) * (c.x - nx) + (c.y - ny) * (c.y - ny));
+    return std::max(0.f, radius - d);
+}
+
+static float objectDepth(CCRect const& pr, GameObject* obj) {
     auto const& orect = obj->getObjectRect();
-    if (orect.size.width <= 0.f || orect.size.height <= 0.f) return false;
-    if (!overlaps(pr, orect)) return false; // bounding boxes don't even touch
+    if (orect.size.width <= 0.f || orect.size.height <= 0.f) return 0.f;
+    float box = rectDepth(pr, orect);
+    if (box <= 0.f) return 0.f; // bounding boxes don't even touch
     if (obj->m_objectRadius > 0.f) {
         float r = std::min(orect.size.width, orect.size.height) * 0.5f;
-        return rectHitsCircle(pr, {orect.getMidX(), orect.getMidY()}, r);
+        return circleDepth(pr, {orect.getMidX(), orect.getMidY()}, r);
     }
     float rot = std::fmod(std::abs(obj->getRotation()), 90.f);
     if (rot > 0.01f && rot < 89.99f) {
@@ -165,24 +175,37 @@ static bool rectHitsObject(CCRect const& pr, GameObject* obj) {
         auto pb = scratchOBB();
         if (ob && pb) {
             pb->calculateWithCenter({pr.getMidX(), pr.getMidY()}, pr.size.width, pr.size.height, 0.f);
-            return pb->overlaps1Way(ob) && ob->overlaps1Way(pb);
+            if (!(pb->overlaps1Way(ob) && ob->overlaps1Way(pb))) return 0.f;
         }
     }
-    return true;
+    return box;
 }
 
-bool Tracker::hitsPlayer(PlayerObject* p, GameObject* obj) {
-    if (!obj || obj->m_isNoTouch || obj->m_isPassable || obj->m_isDisabled || obj->m_isGroupDisabled) return false;
+// How deep the player is inside something deadly (0 = safe). Same shapes the
+// game uses: the full hitbox for spikes / saws, the small inner hitbox for blocks.
+float Tracker::hitDepth(PlayerObject* p, GameObject* obj) {
+    if (!obj || obj->m_isNoTouch || obj->m_isPassable || obj->m_isDisabled || obj->m_isGroupDisabled) return 0.f;
     auto t = obj->m_objectType;
     if (t == GameObjectType::Hazard || t == GameObjectType::AnimatedHazard) {
-        return rectHitsObject(p->getObjectRect(), obj);
+        return objectDepth(p->getObjectRect(), obj);
     }
     if (t == GameObjectType::Solid) {
-        // blocks kill when they reach the small inner hitbox
-        auto inner = p->getObjectRect(0.3f, 0.3f);
-        return overlaps(inner, obj->getObjectRect());
+        return rectDepth(p->getObjectRect(0.3f, 0.3f), obj->getObjectRect());
     }
-    return false;
+    return 0.f;
+}
+
+// A hit is a real death unless your own run went just as deep into the same
+// object and survived. Going clearly deeper than you did still counts, so a
+// spike you barely grazed still kills timings that go further into it.
+static constexpr float kDepthTolerance = 0.75f;
+
+bool Tracker::isGenuine(Ghost::Hit const& h, Group const& grp) const {
+    float allowed = -1.f;
+    if (auto it = m_realDepth.find(h.obj); it != m_realDepth.end()) allowed = std::max(allowed, it->second);
+    if (auto it = grp.baselineDepth.find(h.obj); it != grp.baselineDepth.end()) allowed = std::max(allowed, it->second);
+    if (allowed < 0.f) return true; // you never touched it
+    return h.depth > allowed + kDepthTolerance;
 }
 
 void Tracker::onCollisionList(PlayerObject* p, gd::vector<GameObject*>* objs, int count) {
@@ -191,7 +214,8 @@ void Tracker::onCollisionList(PlayerObject* p, gd::vector<GameObject*>* objs, in
         if (!m_curGhost || m_curGhost->obj != p) return;
         for (int i = 0; i < count; ++i) {
             auto o = objs->at(i);
-            if (hitsPlayer(p, o)) onGhostDeath(p, o);
+            float d = hitDepth(p, o);
+            if (d > 0.f) onGhostDeath(p, o, d);
         }
         return;
     }
@@ -201,7 +225,11 @@ void Tracker::onCollisionList(PlayerObject* p, gd::vector<GameObject*>* objs, in
     if (!pl || p != pl->m_player1 || p->m_isDead) return;
     for (int i = 0; i < count; ++i) {
         auto o = objs->at(i);
-        if (o && hitsPlayer(p, o)) m_realFalseHits.insert(o);
+        float d = o ? hitDepth(p, o) : 0.f;
+        if (d > 0.f) {
+            auto& cur = m_realDepth[o];
+            cur = std::max(cur, d);
+        }
     }
 }
 
@@ -224,9 +252,6 @@ void Tracker::hidePlayer(PlayerObject* p) {
     if (p->m_waveTrail) p->m_waveTrail->setVisible(false);
 }
 
-static PlayerObject* createGhostObj(PlayLayer* pl) {
-    return PlayerObject::create(1, 1, pl, pl, true);
-}
 
 PlayerObject* Tracker::acquireObj(PlayLayer* pl) {
     if (!m_pool.empty()) {
@@ -238,11 +263,23 @@ PlayerObject* Tracker::acquireObj(PlayLayer* pl) {
 }
 
 PlayerObject* Tracker::newObj(PlayLayer* pl) {
-    auto p = createGhostObj(pl);
+    // test players live in an invisible layer outside the level, so hitbox
+    // viewers (MegaHack, practice hitboxes...) don't draw them near obstacles
+    bool hide = Mod::get()->getSettingValue<bool>("hide-ghost-hitboxes");
+    if (hide && !m_ghostRoot) {
+        m_ghostRoot = CCLayer::create();
+        m_ghostRoot->retain();
+        m_ghostRoot->setVisible(false);
+        m_ghostRoot->setID("test-players"_spr);
+        pl->addChild(m_ghostRoot, -1000);
+    }
+    CCLayer* home = hide ? m_ghostRoot : static_cast<CCLayer*>(pl);
+    auto p = PlayerObject::create(1, 1, pl, home, true);
     if (!p) return nullptr;
     p->retain();
     p->setID("frame-window-ghost"_spr);
-    if (pl->m_objectLayer) pl->m_objectLayer->addChild(p);
+    if (hide) m_ghostRoot->addChild(p);
+    else if (pl->m_objectLayer) pl->m_objectLayer->addChild(p);
     hidePlayer(p);
     m_allObjs.push_back(p);
     m_ghostSet.insert(p);
@@ -271,6 +308,55 @@ void Tracker::destroyPool() {
         m_drawNode->release();
         m_drawNode = nullptr;
     }
+    if (m_ghostRoot) {
+        m_ghostRoot->removeFromParentAndCleanup(true);
+        m_ghostRoot->release();
+        m_ghostRoot = nullptr;
+    }
+    clearLiveLabels();
+}
+
+// ---------------------------------------------------------------------------
+// frame windows shown in the level (optional)
+
+void Tracker::spawnLiveLabel(PlayLayer* pl, size_t idx, float x, float y) {
+    if (!pl->m_objectLayer || m_liveLabels.count(idx)) return;
+    auto label = CCLabelBMFont::create("...", "bigFont.fnt");
+    label->setScale(0.4f);
+    label->setColor({180, 180, 180});
+    label->setZOrder(1000);
+    label->setPosition({x, y + 32.f});
+    label->retain();
+    pl->m_objectLayer->addChild(label);
+    m_liveLabels[idx] = label;
+}
+
+void Tracker::finishLiveLabel(size_t idx) {
+    auto it = m_liveLabels.find(idx);
+    if (it == m_liveLabels.end()) return;
+    auto label = it->second;
+    m_liveLabels.erase(it);
+    auto const& in = m_current.inputs[idx];
+    if (in.state == EvalState::NoEffect && !Mod::get()->getSettingValue<bool>("show-ineffective")) {
+        label->removeFromParent();
+    }
+    else {
+        label->setString(labelText(in).c_str());
+        label->setColor(windowColor(in));
+        label->setScale(in.press ? 0.55f : 0.4f);
+        label->runAction(CCSequence::create(
+            CCDelayTime::create(1.5f), CCFadeOut::create(0.5f), CCRemoveSelf::create(), nullptr
+        ));
+    }
+    label->release();
+}
+
+void Tracker::clearLiveLabels() {
+    for (auto& [idx, label] : m_liveLabels) {
+        label->removeFromParent();
+        label->release();
+    }
+    m_liveLabels.clear();
 }
 
 void Tracker::copyState(PlayerObject* dst, PlayerObject* src, bool holding) {
@@ -307,38 +393,40 @@ int Tracker::liveGhostCount() const {
 
 // A test player touched something deadly. It keeps going (like noclip) and the
 // hit only becomes a death if your own run didn't touch the same thing.
-void Tracker::onGhostDeath(PlayerObject* p, GameObject* killer) {
+void Tracker::onGhostDeath(PlayerObject* p, GameObject* killer, float depth) {
     if (!m_curGhost || m_curGhost->obj != p || m_curGhost->status != GStatus::Alive) return;
-    for (auto const& h : m_curGhost->hits) {
-        if (h.first == killer) return;
+    if (depth < 0.f) {
+        // reported by the game itself: always at least a small hit
+        depth = std::max(killer ? hitDepth(p, killer) : 1.f, 0.05f);
     }
-    m_curGhost->hits.push_back({killer, m_stepTick});
+    for (auto& h : m_curGhost->hits) {
+        if (h.obj == killer) {
+            h.depth = std::max(h.depth, depth);
+            return;
+        }
+    }
+    m_curGhost->hits.push_back({killer, m_stepTick, depth});
 }
 
 void Tracker::resolveHits(Group& grp, int t) {
     // the copy of your exact run never dies; whatever it "hit", you survived
     for (auto const& h : grp.baseline.hits) {
-        grp.baselineHits.insert(h.first);
+        auto& d = grp.baselineDepth[h.obj];
+        d = std::max(d, h.depth);
         grp.baselineMismatch = true;
     }
     grp.baseline.hits.clear();
 
     forEachGhost(grp, [&](Ghost& g) {
         if (&g == &grp.baseline || g.status != GStatus::Alive) return;
-        for (size_t i = 0; i < g.hits.size();) {
-            auto obj = g.hits[i].first;
-            if (m_realFalseHits.count(obj) || grp.baselineHits.count(obj)) {
-                g.hits.erase(g.hits.begin() + i);
-                continue;
-            }
-            if (t - g.hits[i].second >= kHitGrace) {
-                g.status = GStatus::Dead;
-                g.killer = obj;
-                g.deathTick = g.hits[i].second;
-                releaseObj(g);
-                return;
-            }
-            ++i;
+        // wait a few steps (the copy of your run may touch the same thing a bit later)
+        for (auto const& h : g.hits) {
+            if (t - h.tick < kHitGrace || !isGenuine(h, grp)) continue;
+            g.status = GStatus::Dead;
+            g.killer = h.obj;
+            g.deathTick = h.tick;
+            releaseObj(g);
+            return;
         }
     });
 }
@@ -381,11 +469,12 @@ void Tracker::startRun(PlayLayer* pl) {
     if (m_running && !m_current.inputs.empty()) finishRun(pl, false);
     finishAllGroups(pl, true, true);
 
+    clearLiveLabels();
     m_current = RunRecord{};
     m_current.replay = std::make_shared<std::vector<ReplayFrame>>();
     m_current.replay->reserve(240 * 30);
     if (pl->m_player1) m_current.startX = pl->m_player1->m_position.x;
-    m_realFalseHits.clear();
+    m_realDepth.clear();
     if (pl->m_level) m_current.levelName = std::string(pl->m_level->m_levelName);
     m_current.attempt = pl->m_attempts;
     m_current.practice = pl->m_isPracticeMode;
@@ -413,6 +502,7 @@ void Tracker::startRun(PlayLayer* pl) {
 
 void Tracker::stopForReplay(PlayLayer* pl) {
     if (m_running) finishRun(pl, false);
+    clearLiveLabels();
     finishAllGroups(pl, true, true);
     m_running = false;
     m_pending.clear();
@@ -662,6 +752,7 @@ void Tracker::createGroup(PlayLayer* pl, size_t idx, int t) {
     grp.fpt = m_fpt;
     grp.offFrames = offs;
     grp.prevTime = idx > 0 ? m_current.inputs[idx - 1].time : -1e18;
+    grp.startTick = t;
     grp.horizonTick = t + static_cast<int>(std::ceil(horizonSeconds() * 240.0 / m_fpt));
     grp.early.resize(offs.size());
     grp.late.resize(offs.size());
@@ -702,16 +793,14 @@ void Tracker::createGroup(PlayLayer* pl, size_t idx, int t) {
         insertEvent(g, {g.fireTime, grp.press, true});
         for (int k2 = s; k2 < t && g.status == GStatus::Alive; ++k2) stepGhost(pl, g, k2);
         // you already went through this stretch, so anything you touched there is safe
-        for (size_t i = 0; i < g.hits.size();) {
-            if (m_realFalseHits.count(g.hits[i].first)) g.hits.erase(g.hits.begin() + i);
-            else ++i;
-        }
-        if (!g.hits.empty() && t - g.hits.front().second >= kHitGrace) {
+        for (auto const& h : g.hits) {
+            if (t - h.tick < kHitGrace || !isGenuine(h, grp)) continue;
             g.status = GStatus::Dead;
-            g.killer = g.hits.front().first;
-            g.deathTick = g.hits.front().second;
+            g.killer = h.obj;
+            g.deathTick = h.tick;
             releaseObj(g);
             earlyDead = true;
+            break;
         }
     }
 
@@ -792,6 +881,16 @@ void Tracker::feedInput(PlayLayer*, size_t idx, bool relevant, int t) {
         }
         if (attached) grp.attached.push_back({rec.time, rec.press, false});
 
+        // look ahead: a shifted input must also get you past the obstacles of your
+        // next few inputs, so keep checking until a bit after the 3rd one
+        if (relevant && grp.inputsAhead < 3) {
+            ++grp.inputsAhead;
+            int ticksPerSec = static_cast<int>(240.0 / grp.fpt);
+            int extended = t + ticksPerSec / 3;
+            int cap = grp.startTick + 3 * ticksPerSec;
+            grp.horizonTick = std::max(grp.horizonTick, std::min(extended, cap));
+        }
+
         forEachGhost(grp, [&](Ghost& g) {
             if (g.status != GStatus::Alive) return;
             if (attached && g.isControl) return; // control never did this click, so not its release either
@@ -819,7 +918,9 @@ void Tracker::evaluateGroup(PlayLayer* pl, Group& grp, RealState const& cur, int
             (std::abs(o->m_position.y - cur.y) > 2.f || std::abs(o->m_position.x - cur.x) > 2.f)) {
             grp.baselineMismatch = true;
         }
-        if ((g.fired || g.isControl) && same && g.hits.empty()) {
+        bool pendingHit = false;
+        for (auto const& h : g.hits) if (isGenuine(h, grp)) pendingHit = true;
+        if ((g.fired || g.isControl) && same && !pendingHit) {
             if (++g.converged >= 2) {
                 g.status = GStatus::Converged;
                 releaseObj(g);
@@ -882,9 +983,9 @@ void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interr
                 auto& g = side[k];
                 bool genuineHit = false;
                 for (auto const& h : g.hits) {
-                    if (!m_realFalseHits.count(h.first) && !grp.baselineHits.count(h.first)) {
+                    if (isGenuine(h, grp)) {
                         genuineHit = true;
-                        if (!g.killer) g.killer = h.first;
+                        if (!g.killer) g.killer = h.obj;
                     }
                 }
                 if (genuineHit && g.status == GStatus::Alive) g.status = GStatus::Dead;
@@ -956,6 +1057,7 @@ void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interr
     }
 
     forEachGhost(grp, [&](Ghost& g) { releaseObj(g); });
+    finishLiveLabel(grp.inputIdx);
     bump();
 }
 
@@ -1003,9 +1105,14 @@ void Tracker::processTick(PlayLayer* pl, int t) {
     }
     m_boostThisTick = false;
 
+    bool liveLabels = Mod::get()->getSettingValue<bool>("show-level-labels");
     for (auto const& p : m_pending) {
         feedInput(pl, p.idx, p.relevant, t);
-        if (p.relevant) createGroup(pl, p.idx, t);
+        if (p.relevant) {
+            if (liveLabels) spawnLiveLabel(pl, p.idx, p.x, cur.y);
+            createGroup(pl, p.idx, t);
+            if (m_current.inputs[p.idx].state != EvalState::Pending) finishLiveLabel(p.idx);
+        }
     }
     m_pending.clear();
 

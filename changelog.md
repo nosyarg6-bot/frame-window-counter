@@ -1,3 +1,11 @@
+# v1.4.0
+- Accuracy: hits are now compared by how deep you go into an obstacle. Before, a spike your run barely grazed was ignored completely, which turned the hardest (1 frame) clicks into ~20 frame results.
+- Look-ahead: every shifted input must also get you through the obstacles of your next 3 inputs (with your later inputs kept as they were), not just a fixed time.
+- Replays: left / right arrow keys jump 5 seconds back / forward, a scroll bar at the bottom seeks anywhere, Exit button, and the replay stays on its last frame when it ends.
+- Overlay Settings (pause > FW): overlay on/off; when on, position, size and background opacity sliders (plus drag to place).
+- New: show every click's frame window in the level while you play (off by default).
+- New: hide test player hitboxes near obstacles (on by default) - test players now live outside the level so hitbox viewers don't draw them.
+
 # v1.3.0
 - Much more accurate: spikes, saws and blocks are checked with the game's own hitbox shapes (boxes, rotated boxes, circles) on top of the game's death check, so test players can't pass through obstacles anymore (fixes 20-30 frame results on 1-3 frame clicks).
 - A hit only counts if your real run didn't touch the same object, so simulation hiccups no longer produce "?" - every click gets an estimate.

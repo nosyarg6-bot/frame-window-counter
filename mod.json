@@ -8,7 +8,7 @@
 	},
 	"id": "nosyarg.frame-window-counter",
 	"name": "Frame Window Counter",
-	"version": "v1.3.0",
+	"version": "v1.4.0",
 	"developer": "nosyarg",
 	"description": "Automatically shows how many 240 FPS frames of leeway every click and release had.",
 	"tags": ["gameplay", "utility", "interface"],
@@ -107,6 +107,18 @@
 			"name": "Show Test Players (debug)",
 			"description": "Draw the hitboxes of the hidden test players. Green = your timing, blue = earlier, orange = later, white = no input.",
 			"default": false
+		},
+		"show-level-labels": {
+			"type": "bool",
+			"name": "Show Frame Windows In The Level",
+			"description": "Pop up each click's frame window above the spot where you clicked, like in replays.",
+			"default": false
+		},
+		"hide-ghost-hitboxes": {
+			"type": "bool",
+			"name": "Hide Test Player Hitboxes",
+			"description": "Keep the hidden test players out of the level's object layer so hitbox viewers (MegaHack, practice hitboxes) don't draw them near obstacles. Applies on the next level load.",
+			"default": true
 		},
 		"report-title": {
 			"type": "title",
