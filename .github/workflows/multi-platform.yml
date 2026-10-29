@@ -28,6 +28,9 @@ jobs:
 
     name: ${{ matrix.config.name }}
     runs-on: ${{ matrix.config.os }}
+    # GitHub's Mac machines are sometimes unavailable; don't block the Windows/Android release on them
+    continue-on-error: ${{ matrix.config.name == 'macOS' }}
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
