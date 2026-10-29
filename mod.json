@@ -1,0 +1,114 @@
+{
+	"geode": "5.11.2",
+	"gd": {
+		"win": "2.2081",
+		"android": "2.2081",
+		"mac": "2.2081",
+		"ios": "2.2081"
+	},
+	"id": "nosyarg.frame-window-counter",
+	"name": "Frame Window Counter",
+	"version": "v1.0.0",
+	"developer": "nosyarg",
+	"description": "Automatically shows how many 240 FPS frames of leeway every click and release had.",
+	"tags": ["gameplay", "utility", "interface"],
+	"dependencies": {
+		"geode.node-ids": ">=v1.23.3"
+	},
+	"settings": {
+		"hud-title": {
+			"type": "title",
+			"name": "Overlay"
+		},
+		"enabled": {
+			"type": "bool",
+			"name": "Enable Overlay",
+			"description": "Show the frame window overlay while playing. Inputs are still recorded when it is hidden.",
+			"default": true
+		},
+		"hud-rows": {
+			"type": "int",
+			"name": "Rows Shown",
+			"description": "How many of your latest inputs the overlay lists.",
+			"default": 8,
+			"min": 3,
+			"max": 20,
+			"control": { "slider": true, "arrows": true }
+		},
+		"hud-scale": {
+			"type": "float",
+			"name": "Overlay Scale",
+			"default": 1.0,
+			"min": 0.4,
+			"max": 2.0,
+			"control": { "slider": true, "slider-step": 0.05 }
+		},
+		"hud-opacity": {
+			"type": "int",
+			"name": "Background Opacity",
+			"default": 150,
+			"min": 0,
+			"max": 255,
+			"control": { "slider": true }
+		},
+		"show-offsets": {
+			"type": "bool",
+			"name": "Show Early / Late Leeway",
+			"description": "Also show how many frames earlier and later each input could have been, e.g. (-1.25 / +0.75).",
+			"default": true
+		},
+		"show-ineffective": {
+			"type": "bool",
+			"name": "List Inputs With No Effect",
+			"description": "Also list inputs that did not change your movement (for example releasing as the cube, or clicking in mid-air).",
+			"default": false
+		},
+		"calc-title": {
+			"type": "title",
+			"name": "Calculation"
+		},
+		"max-window": {
+			"type": "float",
+			"name": "Max Window (frames)",
+			"description": "Windows larger than this are shown as \"free\". Higher values cost more CPU.",
+			"default": 20.0,
+			"min": 4.0,
+			"max": 60.0,
+			"control": { "slider": true, "slider-step": 1.0 }
+		},
+		"physics-tps": {
+			"type": "int",
+			"name": "Physics Ticks Per Second",
+			"description": "Vanilla 2.2 runs physics at 240 ticks per second. Only change this if you use a TPS bypass.",
+			"default": 240,
+			"min": 60,
+			"max": 2000
+		},
+		"inner-hitbox": {
+			"type": "float",
+			"name": "Inner Hitbox Size",
+			"description": "Fraction of the player's hitbox that kills you when it touches a block. Lower is more forgiving.",
+			"default": 0.3,
+			"min": 0.1,
+			"max": 1.0,
+			"control": { "slider": true, "slider-step": 0.05 }
+		},
+		"report-title": {
+			"type": "title",
+			"name": "Run Report"
+		},
+		"report-on-death": {
+			"type": "bool",
+			"name": "Open Report On Death",
+			"description": "Automatically open the full run report every time you die. Off by default because it gets in the way of quick respawns. You can always open it from the pause menu.",
+			"default": false
+		},
+		"history-size": {
+			"type": "int",
+			"name": "Runs Kept In History",
+			"default": 20,
+			"min": 1,
+			"max": 100
+		}
+	}
+}
