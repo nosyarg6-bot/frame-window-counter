@@ -151,19 +151,27 @@ void Replay::onTickEnd(PlayLayer*) {
     // stay on the last frame of the run
     if (m_tick >= totalTicks() && !m_frozen) {
         m_frozen = true;
-        FMODAudioEngine::sharedEngine()->stopAllMusic(true);
+        if (auto ch = FMODAudioEngine::sharedEngine()->getActiveMusicChannel(0)) ch->setPaused(true);
         ++m_revision;
     }
 }
 
 void Replay::syncMusic(PlayLayer* pl) {
     auto engine = FMODAudioEngine::sharedEngine();
-    engine->stopAllMusic(true);
-    if (m_frozen) return;
-    pl->startMusic();
+    auto ch = engine->getActiveMusicChannel(0);
+    if (m_frozen) {
+        if (ch) ch->setPaused(true);
+        return;
+    }
+    if (!ch || !engine->isMusicPlaying(0)) {
+        pl->startMusic();
+        ch = engine->getActiveMusicChannel(0);
+    }
+    if (!ch) return;
     double offset = pl->m_levelSettings ? pl->m_levelSettings->m_songOffset : 0.0;
     double ms = (pl->m_gameState.m_levelTime + offset) * 1000.0;
-    if (ms > 0.0) engine->setMusicTimeMS(static_cast<unsigned int>(ms), true, 0);
+    ch->setPosition(static_cast<unsigned int>(std::max(0.0, ms)), FMOD_TIMEUNIT_MS);
+    ch->setPaused(false);
 }
 
 void Replay::seekTo(int target) {

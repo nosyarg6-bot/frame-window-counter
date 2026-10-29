@@ -1,3 +1,12 @@
+# v1.5.0
+- Test players now copy the game's "last position" and do the end-of-step rotation update like the real game. Without these they drifted away from your real run on every click (the log showed it), which broke ship windows and made spike jumps read wrong.
+- Open space: if nothing but your neighbouring clicks limits an input, it's "free".
+- Look-ahead now ends shortly after your next 2 inputs instead of drifting on through open space.
+- The "Show test player hitboxes" toggle in Overlay Settings now controls the boxes you see after each click (off by default); test players are always hidden from other hitbox viewers.
+- Replay music stays in sync when you skip around, and pauses at the end.
+- Report button on the level complete screen.
+- More detail in the log for each click (how far the simulation drifted), to keep tuning accuracy.
+
 # v1.4.0
 - Accuracy: hits are now compared by how deep you go into an obstacle. Before, a spike your run barely grazed was ignored completely, which turned the hardest (1 frame) clicks into ~20 frame results.
 - Look-ahead: every shifted input must also get you through the obstacles of your next 3 inputs (with your later inputs kept as they were), not just a fixed time.

@@ -329,3 +329,28 @@ class $modify(FWKeyboard, cocos2d::CCKeyboardDispatcher) {
         return CCKeyboardDispatcher::dispatchKeyboardMSG(key, isKeyDown, isKeyRepeat, timestamp);
     }
 };
+
+// ---------------------------------------------------------------------------
+// report button on the level complete screen
+
+#include <Geode/modify/EndLevelLayer.hpp>
+class $modify(FWEndLevelLayer, EndLevelLayer) {
+    void customSetup() {
+        EndLevelLayer::customSetup();
+        auto spr = CircleButtonSprite::createWithSpriteFrameName(
+            "GJ_statsBtn_001.png", 0.9f, CircleBaseColor::Green, CircleBaseSize::Small
+        );
+        if (!spr) return;
+        auto btn = CCMenuItemExt::createSpriteExtra(spr, [](CCMenuItemSpriteExtra*) {
+            if (auto popup = fw::ReportPopup::create()) popup->show();
+        });
+        btn->setID("frame-window-report-btn"_spr);
+        auto menu = CCMenu::create();
+        menu->setID("frame-window-menu"_spr);
+        menu->addChild(btn);
+        auto win = CCDirector::get()->getWinSize();
+        menu->setPosition({win.width * 0.5f + 165.f, win.height * 0.5f + 95.f});
+        if (m_mainLayer) m_mainLayer->addChild(menu, 10);
+        else this->addChild(menu, 10);
+    }
+};

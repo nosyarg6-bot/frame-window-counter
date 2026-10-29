@@ -121,8 +121,8 @@ bool OverlayPopup::init() {
     sep->setPosition({20.f, y2 + 14.f});
     m_mainLayer->addChild(sep);
     addToggle("Show frame windows in the level", "show-level-labels", y2, m_mainLayer, menu, nullptr);
-    addToggle("Hide test player hitboxes near obstacles", "hide-ghost-hitboxes", y2 - 26.f, m_mainLayer, menu, nullptr);
-    auto note = CCLabelBMFont::create("(hitbox setting applies on the next level load)", "chatFont.fnt");
+    addToggle("Show test player hitboxes", "show-test-players", y2 - 26.f, m_mainLayer, menu, nullptr);
+    auto note = CCLabelBMFont::create("(the hidden test players that measure each click - leave off)", "chatFont.fnt");
     note->setScale(0.45f);
     note->setColor({170, 170, 170});
     note->setPosition({kW * 0.5f, y2 - 44.f});

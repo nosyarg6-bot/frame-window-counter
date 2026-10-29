@@ -148,6 +148,8 @@ private:
         bool done = false;
         std::unordered_map<GameObject*, float> baselineDepth; // how deep the copy of your exact run went into things
         int inputsAhead = 0;
+        float baseMaxDx = 0.f, baseMaxDy = 0.f; // how far the copy of your exact run drifted (diagnostics)
+        std::string baseHitNames;
         int startTick = 0;
     };
 

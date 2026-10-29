@@ -265,7 +265,7 @@ PlayerObject* Tracker::acquireObj(PlayLayer* pl) {
 PlayerObject* Tracker::newObj(PlayLayer* pl) {
     // test players live in an invisible layer outside the level, so hitbox
     // viewers (MegaHack, practice hitboxes...) don't draw them near obstacles
-    bool hide = Mod::get()->getSettingValue<bool>("hide-ghost-hitboxes");
+    bool hide = true;
     if (hide && !m_ghostRoot) {
         m_ghostRoot = CCLayer::create();
         m_ghostRoot->retain();
@@ -367,6 +367,9 @@ void Tracker::copyState(PlayerObject* dst, PlayerObject* src, bool holding) {
     FW_PLAYER_FIELDS(FW_COPY)
 #undef FW_COPY
     dst->setPosition(src->getPosition());
+    // the game decides landing vs. crashing from where you were last step
+    dst->m_lastPosition = src->m_lastPosition;
+    dst->setRotation(src->getRotation());
     dst->m_isDead = false;
     dst->m_ignoreDamage = false; // never inherit noclip
     dst->m_holdingButtons[1] = holding;
@@ -395,6 +398,7 @@ int Tracker::liveGhostCount() const {
 // hit only becomes a death if your own run didn't touch the same thing.
 void Tracker::onGhostDeath(PlayerObject* p, GameObject* killer, float depth) {
     if (!m_curGhost || m_curGhost->obj != p || m_curGhost->status != GStatus::Alive) return;
+    if (auto pl = PlayLayer::get(); pl && killer && killer == pl->m_anticheatSpike) return;
     if (depth < 0.f) {
         // reported by the game itself: always at least a small hit
         depth = std::max(killer ? hitDepth(p, killer) : 1.f, 0.05f);
@@ -414,6 +418,10 @@ void Tracker::resolveHits(Group& grp, int t) {
         auto& d = grp.baselineDepth[h.obj];
         d = std::max(d, h.depth);
         grp.baselineMismatch = true;
+        auto name = fmt::format("{}#{}({:.2f})", killerName(h.obj), h.obj ? h.obj->m_objectID : 0, h.depth);
+        if (grp.baseHitNames.find(name) == std::string::npos && grp.baseHitNames.size() < 120) {
+            grp.baseHitNames += name + " ";
+        }
     }
     grp.baseline.hits.clear();
 
@@ -664,6 +672,8 @@ void Tracker::stepGhost(PlayLayer* pl, Ghost& g, int tick) {
     resetCollisionLog(g.obj);
     float dt = m_tickDt;
     double pos = 0.0;
+    CCPoint stepStart = g.obj->m_position;
+    bool split = false;
     while (!g.events.empty() && g.events.front().time < tick + 1 - 1e-9) {
         Event ev = g.events.front();
         g.events.erase(g.events.begin());
@@ -671,12 +681,20 @@ void Tracker::stepGhost(PlayLayer* pl, Ghost& g, int tick) {
         if (f > pos + 1e-6) {
             subStep(pl, g, static_cast<float>((f - pos) * dt), false);
             pos = f;
+            split = true;
             if (g.status != GStatus::Alive) return;
         }
         applyEvent(g, ev);
     }
     subStep(pl, g, static_cast<float>(std::max(0.0, 1.0 - pos) * dt), true);
-    if (g.status != GStatus::Alive) return;
+    if (g.status != GStatus::Alive || !g.obj) return;
+    // the game ends every step with the rotation update
+    m_simulating = true;
+    m_curGhost = &g;
+    g.obj->updateRotation(dt);
+    if (split) g.obj->m_lastPosition = stepStart;
+    m_curGhost = nullptr;
+    m_simulating = false;
     tryPad(g);
     if (g.holding && g.ringPending) tryRing(g);
     if (g.obj->m_isOnGround) g.ringPending = false;
@@ -881,14 +899,16 @@ void Tracker::feedInput(PlayLayer*, size_t idx, bool relevant, int t) {
         }
         if (attached) grp.attached.push_back({rec.time, rec.press, false});
 
-        // look ahead: a shifted input must also get you past the obstacles of your
-        // next few inputs, so keep checking until a bit after the 3rd one
-        if (relevant && grp.inputsAhead < 3) {
+        // look ahead: a shifted input must also get you past the obstacles around
+        // your next 2 inputs (with them kept where you did them), then the
+        // measurement can end - no need to drift on through open space
+        if (relevant && grp.inputsAhead < 2) {
             ++grp.inputsAhead;
-            int ticksPerSec = static_cast<int>(240.0 / grp.fpt);
-            int extended = t + ticksPerSec / 3;
-            int cap = grp.startTick + 3 * ticksPerSec;
-            grp.horizonTick = std::max(grp.horizonTick, std::min(extended, cap));
+            if (grp.inputsAhead == 2) {
+                int ticksPerSec = static_cast<int>(240.0 / grp.fpt);
+                int end = std::max(grp.startTick + ticksPerSec / 4, t + ticksPerSec / 4);
+                grp.horizonTick = std::min(grp.horizonTick, end);
+            }
         }
 
         forEachGhost(grp, [&](Ghost& g) {
@@ -914,9 +934,11 @@ void Tracker::evaluateGroup(PlayLayer* pl, Group& grp, RealState const& cur, int
                     o->m_isUpsideDown == cur.upsideDown &&
                     g.holding == cur.holding &&
                     modeKeyOf(o) == cur.modeKey;
-        if (&g == &grp.baseline && !same &&
-            (std::abs(o->m_position.y - cur.y) > 2.f || std::abs(o->m_position.x - cur.x) > 2.f)) {
-            grp.baselineMismatch = true;
+        if (&g == &grp.baseline) {
+            float dx = std::abs(o->m_position.x - cur.x), dy = std::abs(o->m_position.y - cur.y);
+            grp.baseMaxDx = std::max(grp.baseMaxDx, dx);
+            grp.baseMaxDy = std::max(grp.baseMaxDy, dy);
+            if (!same && (dy > 2.f || dx > 2.f)) grp.baselineMismatch = true;
         }
         bool pendingHit = false;
         for (auto const& h : g.hits) if (isGenuine(h, grp)) pendingHit = true;
@@ -1024,17 +1046,28 @@ void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interr
         rec.earlyFrames = static_cast<float>(e.edge);
         rec.lateFrames = static_cast<float>(l.edge);
         rec.windowFrames = static_cast<float>(e.edge + l.edge);
-        rec.cappedEarly = e.capped;
-        rec.cappedLate = l.capped;
+        // no obstacle on either side (only your neighbouring clicks): that's open space
+        bool eOpen = e.capped || (e.spacing && !e.died);
+        bool lOpen = l.capped || (l.spacing && !l.died);
+        rec.cappedEarly = eOpen;
+        rec.cappedLate = lOpen;
+        if (eOpen != lOpen) {
+            // one side open: count it as the max so the window shows the other side's limit
+            if (eOpen) rec.earlyFrames = static_cast<float>(std::max(e.edge, grp.offFrames.back()));
+            if (lOpen) rec.lateFrames = static_cast<float>(std::max(l.edge, grp.offFrames.back()));
+            rec.cappedEarly = e.capped;
+            rec.cappedLate = l.capped;
+        }
+        rec.windowFrames = rec.earlyFrames + rec.lateFrames;
         rec.truncated = truncated;
         rec.approx = grp.baselineMismatch;
         forEachGhost(grp, [&](Ghost& g) { if (g.approxBoost && g.status != GStatus::Dead) rec.approx = true; });
 
         // what limited the window: the tighter side
         SideResult const* tight = nullptr;
-        if (!e.capped && !l.capped) tight = e.edge <= l.edge ? &e : &l;
-        else if (!e.capped) tight = &e;
-        else if (!l.capped) tight = &l;
+        if (!eOpen && !lOpen) tight = e.edge <= l.edge ? &e : &l;
+        else if (!eOpen) tight = &e;
+        else if (!lOpen) tight = &l;
         if (tight) {
             if (tight->died) {
                 rec.obstacle = killerName(tight->killer);
@@ -1050,10 +1083,11 @@ void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interr
             }
         }
         rec.state = EvalState::Done;
-        log::info("#{} {} at {:.1f}%: window {:.2f} (early {:.2f}{}, late {:.2f}{}) obstacle '{}' approx={} fpt={:.3f} shifts={}",
+        log::info("#{} {} at {:.1f}%: window {:.2f} (early {:.2f}{}{}, late {:.2f}{}{}) obstacle '{}' approx={} drift dx={:.2f} dy={:.2f} basehits=[{}] mode={} fpt={:.3f} shifts={}",
             rec.number, rec.press ? "click" : "release", rec.percent, rec.windowFrames,
-            rec.earlyFrames, e.capped ? " max" : "", rec.lateFrames, l.capped ? " max" : "",
-            rec.obstacle, rec.approx, grp.fpt, grp.offFrames.size());
+            e.edge, e.capped ? " max" : "", e.spacing ? " spacing" : "", l.edge, l.capped ? " max" : "", l.spacing ? " spacing" : "",
+            rec.obstacle, rec.approx, grp.baseMaxDx, grp.baseMaxDy, grp.baseHitNames,
+            pl && pl->m_player1 ? modeKeyOf(pl->m_player1) : -1, grp.fpt, grp.offFrames.size());
     }
 
     forEachGhost(grp, [&](Ghost& g) { releaseObj(g); });
