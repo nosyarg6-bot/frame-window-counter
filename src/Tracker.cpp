@@ -9,6 +9,8 @@
 #include <Geode/binding/OBB2D.hpp>
 #include <Geode/binding/PlayLayer.hpp>
 #include <Geode/binding/PlayerObject.hpp>
+#include <Geode/binding/FMODAudioEngine.hpp>
+#include <Geode/fmod/fmod.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -542,6 +544,9 @@ void Tracker::finishRun(PlayLayer* pl, bool completed) {
         Mic::get().update();
         m_current.mic = Mic::get().extract(m_current.micStart, Mic::get().position());
         m_current.micRate = Mic::get().rate();
+        int peak = 0;
+        for (auto v : *m_current.mic) peak = std::max(peak, std::abs(static_cast<int>(v)));
+        log::info("mic: {} samples recorded for this attempt, peak {:.1f}%", m_current.mic->size(), peak / 327.68);
     }
     m_current.completed = completed;
     m_current.endPercent = completed ? 100.f : (pl ? pl->getCurrentPercent() : 0.f);
@@ -1336,6 +1341,19 @@ void Tracker::processTick(PlayLayer* pl, int t) {
     }
 
     drawDebug(pl);
+
+    // where the song really is (start positions start it partway through)
+    if (m_current.musicStartSec < 0.0 && t >= 2) {
+        if (auto engine = FMODAudioEngine::sharedEngine()) {
+            if (auto ch = engine->getActiveMusicChannel(0)) {
+                bool playing = false;
+                unsigned int ms = 0;
+                if (ch->isPlaying(&playing) == FMOD_OK && playing && ch->getPosition(&ms, FMOD_TIMEUNIT_MS) == FMOD_OK) {
+                    m_current.musicStartSec = ms / 1000.0 - (t + 1) * (m_fpt / 240.0);
+                }
+            }
+        }
+    }
 
     if (m_current.replay) {
         auto& frames = *m_current.replay;

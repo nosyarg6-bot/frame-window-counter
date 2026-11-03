@@ -429,7 +429,8 @@ std::vector<float> Exporter::buildAudio() {
         size_t segSamples = static_cast<size_t>(durSec * kAudioRate);
 
         if (gameVol > 0.f) {
-            auto music = decodeMusic(path, songOffset + startSec, durSec);
+            double songPos = seg.run.musicStartSec >= 0.0 ? seg.run.musicStartSec + startSec : songOffset + startSec;
+            auto music = decodeMusic(path, songPos, durSec);
             for (size_t i = 0; i < segSamples && pos + i < totalSamples && i * 2 + 1 < music.size(); ++i) {
                 out[(pos + i) * 2] += music[i * 2] * gameVol;
                 out[(pos + i) * 2 + 1] += music[i * 2 + 1] * gameVol;
@@ -478,6 +479,17 @@ void Exporter::finish(bool ok, std::string const& error) {
         }
         else {
             message = "Clip saved: " + st.output.filename().string();
+            if (Mod::get()->getSettingValue<bool>("mic-enabled")) {
+                int peak = 0;
+                bool any = false;
+                for (auto const& seg : st.segments) {
+                    if (!seg.run.mic) continue;
+                    any = true;
+                    for (auto v : *seg.run.mic) peak = std::max(peak, std::abs(static_cast<int>(v)));
+                }
+                if (!any) message += " (no mic audio was recorded for this attempt)";
+                else if (peak < 100) message += " (the mic was silent - check Choose Microphone)";
+            }
             // add the audio decoder config the encoder leaves out, so every player has sound
             if (auto data = utils::file::readBinary(st.output); data.isOk()) {
                 auto bytes = data.unwrap();

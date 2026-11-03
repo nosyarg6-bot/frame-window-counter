@@ -177,7 +177,9 @@ void Replay::syncMusic(PlayLayer* pl) {
     }
     if (!ch) return;
     double offset = pl->m_levelSettings ? pl->m_levelSettings->m_songOffset : 0.0;
-    double ms = (pl->m_gameState.m_levelTime + offset) * 1000.0;
+    double ms = m_run.musicStartSec >= 0.0
+        ? (m_run.musicStartSec + m_tick * m_run.secondsPerTick) * 1000.0
+        : (pl->m_gameState.m_levelTime + offset) * 1000.0;
     ch->setPosition(static_cast<unsigned int>(std::max(0.0, ms)), FMOD_TIMEUNIT_MS);
     ch->setPaused(false);
 }

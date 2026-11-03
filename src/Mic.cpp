@@ -98,7 +98,15 @@ void Mic::start() {
     }
     m_driver = driver;
     m_lastPos = 0;
-    log::info("Frame Window Counter: recording microphone #{} at {} Hz", driver, m_rate);
+    {
+        char name[256] = {0};
+        int rate = 0, channels = 0;
+        FMOD_SPEAKERMODE mode;
+        FMOD_DRIVER_STATE state = 0;
+        sys->getRecordDriverInfo(driver, name, sizeof(name), nullptr, &rate, &mode, &channels, &state);
+        m_deviceName = name;
+    }
+    log::info("Frame Window Counter: recording microphone #{} '{}' at {} Hz", driver, m_deviceName, m_rate);
 }
 
 void Mic::stop() {
@@ -109,7 +117,21 @@ void Mic::stop() {
     m_driver = -1;
 }
 
+float Mic::level() const {
+    size_t n = std::min<size_t>(m_rolling.size(), static_cast<size_t>(m_rate / 10));
+    int peak = 0;
+    for (size_t i = m_rolling.size() - n; i < m_rolling.size(); ++i) peak = std::max(peak, std::abs(static_cast<int>(m_rolling[i])));
+    return peak / 32768.f;
+}
+
 void Mic::update() {
+    // follow the setting, even if it's changed in the middle of a level
+    bool enabled = Mod::get()->getSettingValue<bool>("mic-enabled");
+    if (enabled && m_driver < 0) {
+        static int s_retry = 0;
+        if (++s_retry % 240 == 1) start();
+    }
+    if (!enabled && m_driver >= 0) stop();
     if (m_driver < 0 || !m_sound) return;
     auto sys = fmodSystem();
     if (!sys) return;

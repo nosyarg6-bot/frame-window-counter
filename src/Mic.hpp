@@ -25,6 +25,8 @@ public:
 
     uint64_t position() const { return m_total; } // total samples recorded so far
     int rate() const { return m_rate; }
+    float level() const; // loudness of the last ~0.1 s, 0..1
+    std::string deviceName() const { return m_deviceName; }
     // copy samples [from, to) that are still in the rolling buffer
     std::shared_ptr<std::vector<int16_t>> extract(uint64_t from, uint64_t to) const;
 
@@ -37,6 +39,7 @@ private:
     uint64_t m_total = 0;
     std::deque<int16_t> m_rolling;
     uint64_t m_rollingStart = 0; // sample index of m_rolling.front()
+    std::string m_deviceName;
 };
 
 // Plays a recorded mic clip during a replay.

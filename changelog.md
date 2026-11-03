@@ -1,3 +1,7 @@
+# v1.8.2
+- Clips and replays from a start position now use the right part of the song (the song's real position is read when the attempt starts).
+- Microphone: live level meter in Choose Microphone, recording turns on/off right away when the setting changes, and a clip tells you if the mic was silent.
+
 # v1.8.1
 - Fixed clips having no sound in most players (the audio track was missing its AAC decoder config).
 
