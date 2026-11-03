@@ -1,5 +1,6 @@
 #include "Export.hpp"
 #include "Replay.hpp"
+#include "Mp4Fix.hpp"
 
 #if __has_include(<eclipse.ffmpeg-api/include/events.hpp>)
 #include <eclipse.ffmpeg-api/include/events.hpp>
@@ -477,6 +478,15 @@ void Exporter::finish(bool ok, std::string const& error) {
         }
         else {
             message = "Clip saved: " + st.output.filename().string();
+            // add the audio decoder config the encoder leaves out, so every player has sound
+            if (auto data = utils::file::readBinary(st.output); data.isOk()) {
+                auto bytes = data.unwrap();
+                if (mp4::fixAacEsds(bytes, kAudioRate, 2)) {
+                    if (auto w = utils::file::writeBinary(st.output, bytes); w.isErr()) {
+                        log::warn("Frame Window Counter: couldn't fix clip audio: {}", w.unwrapErr());
+                    }
+                }
+            }
         }
         std::filesystem::remove(st.videoTmp, ec);
         log::info("Frame Window Counter: saved {}", st.output.string());

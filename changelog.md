@@ -1,3 +1,6 @@
+# v1.8.1
+- Fixed clips having no sound in most players (the audio track was missing its AAC decoder config).
+
 # v1.8.0
 - Gamemode switching: test players now go through the same portals you did (gamemode, gravity, size and speed portals), so clicks near a portal are measured through it instead of being cut short.
 - Ship / wave / swing: a shifted input only has to keep you alive until your next input (plus ~6 frames to react), so windows in tight corridors measure the gap you actually had. Before, every later input was locked in place, which made ship windows far too small.
