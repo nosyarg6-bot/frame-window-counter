@@ -66,7 +66,8 @@ Exporter& Exporter::get() {
 }
 
 std::filesystem::path Exporter::clipsFolder() {
-    auto dir = Mod::get()->getSaveDir() / "clips";
+    auto dir = Mod::get()->getSettingValue<std::filesystem::path>("clips-folder");
+    if (dir.empty()) dir = Mod::get()->getSaveDir() / "clips";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir;
@@ -242,6 +243,17 @@ void Exporter::capture() {
     if (!scene) return;
     st.progress->setVisible(false);
     st.texture->beginWithClear(0.f, 0.f, 0.f, 1.f);
+    // CCRenderTexture draws at screen-pixel scale (so a smaller video only shows
+    // a corner of the screen): map the whole screen onto the video instead
+    auto win = CCDirector::get()->getWinSize();
+    kmGLMatrixMode(KM_GL_PROJECTION);
+    kmGLLoadIdentity();
+    kmMat4 ortho;
+    kmMat4OrthographicProjection(&ortho, 0.f, win.width, 0.f, win.height, -1024.f, 1024.f);
+    kmGLMultMatrix(&ortho);
+    kmGLMatrixMode(KM_GL_MODELVIEW);
+    kmGLLoadIdentity();
+    glViewport(0, 0, st.width, st.height);
     scene->visit();
     glReadPixels(0, 0, st.width, st.height, GL_RGBA, GL_UNSIGNED_BYTE, st.pixels.data());
     st.texture->end();
@@ -382,6 +394,23 @@ static std::vector<float> decodeMusic(std::string const& path, double startSec, 
     return out;
 }
 
+// 16-bit stereo 44.1 kHz WAV
+static void writeWav(std::filesystem::path const& path, std::vector<float> const& samples) {
+    std::vector<uint8_t> data;
+    auto u32 = [&](uint32_t v) { for (int i = 0; i < 4; ++i) data.push_back(static_cast<uint8_t>(v >> (8 * i))); };
+    auto u16 = [&](uint16_t v) { data.push_back(static_cast<uint8_t>(v)); data.push_back(static_cast<uint8_t>(v >> 8)); };
+    uint32_t bytes = static_cast<uint32_t>(samples.size() * 2);
+    data.insert(data.end(), {'R', 'I', 'F', 'F'}); u32(36 + bytes);
+    data.insert(data.end(), {'W', 'A', 'V', 'E', 'f', 'm', 't', ' '}); u32(16); u16(1); u16(2);
+    u32(kAudioRate); u32(kAudioRate * 4); u16(4); u16(16);
+    data.insert(data.end(), {'d', 'a', 't', 'a'}); u32(bytes);
+    for (float f : samples) {
+        auto v = static_cast<int16_t>(std::clamp(f, -1.f, 1.f) * 32767.f);
+        u16(static_cast<uint16_t>(v));
+    }
+    (void)utils::file::writeBinary(path, data);
+}
+
 std::vector<float> Exporter::buildAudio() {
     auto& st = *m_state;
     auto pl = PlayLayer::get();
@@ -434,6 +463,11 @@ void Exporter::finish(bool ok, std::string const& error) {
     std::string message;
     if (ok && st.totalFrames > 0) {
         auto audio = buildAudio();
+        if (Mod::get()->getSettingValue<bool>("clip-save-wav")) {
+            auto wavPath = st.output;
+            wavPath.replace_extension(".wav");
+            writeWav(wavPath, audio);
+        }
         std::error_code ec;
         auto res = ffmpeg::events::AudioMixer::mixVideoRaw(st.videoTmp, audio, st.output);
         if (res.isErr()) {

@@ -8,7 +8,7 @@
 	},
 	"id": "nosyarg.frame-window-counter",
 	"name": "Frame Window Counter",
-	"version": "v1.7.0",
+	"version": "v1.8.0",
 	"developer": "nosyarg",
 	"description": "Automatically shows how many 240 FPS frames of leeway every click and release had.",
 	"tags": ["gameplay", "utility", "interface"],
@@ -221,6 +221,18 @@
 			"name": "Clip Codec",
 			"description": "Leave empty to pick automatically (libx264, or your GPU's encoder).",
 			"default": ""
+		},
+		"clips-folder": {
+			"type": "folder",
+			"name": "Clips Folder Location",
+			"description": "Where saved clips (MP4) go.",
+			"default": "{mod_save_dir}/clips"
+		},
+		"clip-save-wav": {
+			"type": "bool",
+			"name": "Also Save Audio As WAV",
+			"description": "Save the clip's audio as an uncompressed .wav next to the MP4 (for video editors).",
+			"default": false
 		},
 		"open-clips": {
 			"type": "button",

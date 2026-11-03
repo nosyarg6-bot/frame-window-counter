@@ -1,3 +1,10 @@
+# v1.8.0
+- Gamemode switching: test players now go through the same portals you did (gamemode, gravity, size and speed portals), so clicks near a portal are measured through it instead of being cut short.
+- Ship / wave / swing: a shifted input only has to keep you alive until your next input (plus ~6 frames to react), so windows in tight corridors measure the gap you actually had. Before, every later input was locked in place, which made ship windows far too small.
+- Clips: fixed the video only showing a zoomed-in corner of the screen.
+- New settings: Clips Folder Location, Also Save Audio As WAV.
+- The log now records what killed each failed timing, and where, to keep tuning accuracy.
+
 # v1.7.0
 - Accuracy: whole-frame shifts now decide each window, and fractional shifts only refine the last frame. They're ignored if they disagree. This fixes UFO clicks that always read 0.50 and ship clicks/releases that were always cut short on one side.
 - Windows at least as big as the max tested now show as "free" instead of 20-30.

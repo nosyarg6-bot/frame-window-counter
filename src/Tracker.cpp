@@ -408,7 +408,7 @@ void Tracker::onGhostDeath(PlayerObject* p, GameObject* killer, float depth) {
             return;
         }
     }
-    m_curGhost->hits.push_back({killer, m_stepTick, depth});
+    m_curGhost->hits.push_back({killer, m_stepTick, depth, p->getPositionX(), p->getPositionY()});
 }
 
 void Tracker::resolveHits(Group& grp, int t) {
@@ -432,6 +432,8 @@ void Tracker::resolveHits(Group& grp, int t) {
             g.status = GStatus::Dead;
             g.killer = h.obj;
             g.deathTick = h.tick;
+            g.deathX = h.x;
+            g.deathY = h.y;
             releaseObj(g);
             return;
         }
@@ -485,6 +487,8 @@ void Tracker::startRun(PlayLayer* pl) {
     m_current.replay->reserve(240 * 30);
     if (pl->m_player1) m_current.startX = pl->m_player1->getPositionX();
     m_realDepth.clear();
+    m_portals.clear();
+    m_prevPortal = pl->m_player1 ? pl->m_player1->m_lastActivatedPortal : nullptr;
     Mic::get().update();
     m_current.micStart = Mic::get().position();
     m_current.micRate = Mic::get().rate();
@@ -711,9 +715,65 @@ void Tracker::stepGhost(PlayLayer* pl, Ghost& g, int tick) {
     if (split) g.obj->m_lastPosition = stepStart;
     m_curGhost = nullptr;
     m_simulating = false;
+    applyPortals(g, tick);
+    if (g.status != GStatus::Alive || !g.obj) return;
     tryPad(g);
     if (g.holding && g.ringPending) tryRing(g);
     if (g.obj->m_isOnGround) g.ringPending = false;
+}
+
+void Tracker::applyPortal(PlayerObject* p, PortalEvent const& ev) {
+    if (!ev.obj) {
+        p->m_playerSpeed = ev.speed;
+        return;
+    }
+    auto type = static_cast<GameObjectType>(ev.type);
+    auto setMode = [&](GameObjectType target) {
+        if (p->m_isShip && target != GameObjectType::ShipPortal) p->toggleFlyMode(false, true);
+        if (p->m_isBall && target != GameObjectType::BallPortal) p->toggleRollMode(false, true);
+        if (p->m_isBird && target != GameObjectType::UfoPortal) p->toggleBirdMode(false, true);
+        if (p->m_isDart && target != GameObjectType::WavePortal) p->toggleDartMode(false, true);
+        if (p->m_isRobot && target != GameObjectType::RobotPortal) p->toggleRobotMode(false, true);
+        if (p->m_isSpider && target != GameObjectType::SpiderPortal) p->toggleSpiderMode(false, true);
+        if (p->m_isSwing && target != GameObjectType::SwingPortal) p->toggleSwingMode(false, true);
+        switch (target) {
+            case GameObjectType::ShipPortal: if (!p->m_isShip) p->toggleFlyMode(true, true); break;
+            case GameObjectType::BallPortal: if (!p->m_isBall) p->toggleRollMode(true, true); break;
+            case GameObjectType::UfoPortal: if (!p->m_isBird) p->toggleBirdMode(true, true); break;
+            case GameObjectType::WavePortal: if (!p->m_isDart) p->toggleDartMode(true, true); break;
+            case GameObjectType::RobotPortal: if (!p->m_isRobot) p->toggleRobotMode(true, true); break;
+            case GameObjectType::SpiderPortal: if (!p->m_isSpider) p->toggleSpiderMode(true, true); break;
+            case GameObjectType::SwingPortal: if (!p->m_isSwing) p->toggleSwingMode(true, true); break;
+            default: break;
+        }
+    };
+    switch (type) {
+        case GameObjectType::InverseGravityPortal: if (!p->m_isUpsideDown) p->flipGravity(true, true); break;
+        case GameObjectType::NormalGravityPortal: if (p->m_isUpsideDown) p->flipGravity(false, true); break;
+        case GameObjectType::GravityTogglePortal: p->flipGravity(!p->m_isUpsideDown, true); break;
+        case GameObjectType::MiniSizePortal: p->togglePlayerScale(true, true); break;
+        case GameObjectType::RegularSizePortal: p->togglePlayerScale(false, true); break;
+        default: setMode(type); break;
+    }
+}
+
+void Tracker::applyPortals(Ghost& g, int tick) {
+    if (m_portals.empty() || !g.obj || g.status != GStatus::Alive) return;
+    for (auto const& ev : m_portals) {
+        if (ev.tick != tick) continue;
+        if (ev.obj) {
+            // only if this test player actually goes through that portal
+            auto r = g.obj->getObjectRect();
+            r.origin.x -= 8.f;
+            r.size.width += 16.f;
+            if (!overlaps(r, ev.obj->getObjectRect())) continue;
+        }
+        m_simulating = true;
+        m_curGhost = &g;
+        applyPortal(g.obj, ev);
+        m_curGhost = nullptr;
+        m_simulating = false;
+    }
 }
 
 void Tracker::insertEvent(Ghost& g, Event const& ev) {
@@ -787,6 +847,7 @@ void Tracker::createGroup(PlayLayer* pl, size_t idx, int t) {
     grp.offFrames = offs;
     grp.prevTime = idx > 0 ? m_current.inputs[idx - 1].time : -1e18;
     grp.startTick = t;
+    if (auto rp = pl->m_player1) grp.continuous = rp->m_isShip || rp->m_isDart || rp->m_isSwing;
     grp.horizonTick = t + static_cast<int>(std::ceil(horizonSeconds() * 240.0 / m_fpt));
     grp.early.resize(offs.size());
     grp.late.resize(offs.size());
@@ -832,6 +893,8 @@ void Tracker::createGroup(PlayLayer* pl, size_t idx, int t) {
             g.status = GStatus::Dead;
             g.killer = h.obj;
             g.deathTick = h.tick;
+            g.deathX = h.x;
+            g.deathY = h.y;
             releaseObj(g);
             if (isWholeStep(g.offTicks)) earlyDead = true;
             break;
@@ -918,6 +981,13 @@ void Tracker::feedInput(PlayLayer*, size_t idx, bool relevant, int t) {
         // look ahead: a shifted input must also get you past the obstacles around
         // your next 2 inputs (with them kept where you did them), then the
         // measurement can end - no need to drift on through open space
+        // ship / wave / swing: you steer all the time, so a shifted input only has
+        // to keep you alive until your next input (+ a moment to react), not
+        // with every later input locked in place
+        if (relevant && grp.continuous && grp.inputsAhead == 0) {
+            int margin = static_cast<int>(std::ceil(6.0 / grp.fpt)); // ~6 frames
+            grp.horizonTick = std::min(grp.horizonTick, t + margin);
+        }
         if (relevant && grp.inputsAhead < 2) {
             ++grp.inputsAhead;
             if (grp.inputsAhead == 2) {
@@ -1018,7 +1088,7 @@ void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interr
         auto settle = [&](Ghost& g) {
             for (auto const& h : g.hits) {
                 if (isGenuine(h, grp)) {
-                    if (!g.killer) g.killer = h.obj;
+                    if (!g.killer) { g.killer = h.obj; g.deathTick = h.tick; g.deathX = h.x; g.deathY = h.y; }
                     if (g.status == GStatus::Alive) g.status = GStatus::Dead;
                 }
             }
@@ -1073,6 +1143,21 @@ void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interr
                 truncated = true;
             }
             return r;
+        };
+        auto firstDeath = [&](std::vector<Ghost> const& side) {
+            for (auto const& g : side) {
+                if (g.status != GStatus::Dead) continue;
+                float realY = 0.f;
+                if (m_current.replay && g.deathTick >= 0 && g.deathTick < static_cast<int>(m_current.replay->size())) {
+                    realY = (*m_current.replay)[g.deathTick].y;
+                }
+                CCRect kr = g.killer ? g.killer->getObjectRect() : CCRect();
+                return fmt::format("{:+.2f}f:{}#{} @{:+d}t y={:.1f} you={:.1f} obj=({:.0f},{:.0f} {:.0f}x{:.0f})",
+                    g.offTicks * grp.fpt, killerName(g.killer), g.killer ? g.killer->m_objectID : 0,
+                    g.deathTick - static_cast<int>(grp.T0), g.deathY, realY,
+                    kr.getMinX(), kr.getMinY(), kr.size.width, kr.size.height);
+            }
+            return std::string("-");
         };
         auto statusLine = [&](std::vector<Ghost> const& side) {
             std::string out;
@@ -1138,11 +1223,11 @@ void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interr
             }
         }
         rec.state = EvalState::Done;
-        log::info("#{} {} at {:.1f}%: window {:.2f} (early {:.2f}{}{}, late {:.2f}{}{}) obstacle '{}' approx={} drift dx={:.2f} dy={:.2f} basehits=[{}] mode={} fpt={:.3f} shifts={} E[{}] L[{}]",
+        log::info("#{} {} at {:.1f}%: window {:.2f} (early {:.2f}{}{}, late {:.2f}{}{}) obstacle '{}' approx={} drift dx={:.2f} dy={:.2f} basehits=[{}] mode={} fpt={:.3f} shifts={} E[{}] L[{}] cont={} Edeath[{}] Ldeath[{}]",
             rec.number, rec.press ? "click" : "release", rec.percent, rec.windowFrames,
             e.edge, e.capped ? " max" : "", e.spacing ? " spacing" : "", l.edge, l.capped ? " max" : "", l.spacing ? " spacing" : "",
             rec.obstacle, rec.approx, grp.baseMaxDx, grp.baseMaxDy, grp.baseHitNames,
-            pl && pl->m_player1 ? modeKeyOf(pl->m_player1) : -1, grp.fpt, grp.offFrames.size(), statusLine(grp.early), statusLine(grp.late));
+            pl && pl->m_player1 ? modeKeyOf(pl->m_player1) : -1, grp.fpt, grp.offFrames.size(), statusLine(grp.early), statusLine(grp.late), grp.continuous, firstDeath(grp.early), firstDeath(grp.late));
     }
 
     forEachGhost(grp, [&](Ghost& g) { releaseObj(g); });
@@ -1182,15 +1267,41 @@ void Tracker::processTick(PlayLayer* pl, int t) {
     // portals change things the test players can't copy: finish what's running
     bool inputThisTick = !m_pending.empty();
     if (m_hasPrevReal) {
-        bool portal = cur.modeKey != m_prevReal.modeKey ||
-                      std::abs(cur.speed - m_prevReal.speed) > 0.001f ||
-                      std::abs(cur.size - m_prevReal.size) > 0.001f ||
-                      std::abs(cur.x - m_prevReal.x) > 60.f;
-        bool flipped = cur.modeKey == m_prevReal.modeKey && cur.upsideDown != m_prevReal.upsideDown;
-        if (flipped && !inputThisTick && !m_boostThisTick && !real->m_isBall && !real->m_isSwing && !real->m_isSpider) {
-            portal = true;
+        // portals: test players that touch the same portal switch the same way
+        bool unsupported = std::abs(cur.x - m_prevReal.x) > 60.f; // teleport
+        if (std::abs(cur.speed - m_prevReal.speed) > 0.001f) {
+            PortalEvent ev;
+            ev.tick = t;
+            ev.speed = cur.speed;
+            m_portals.push_back(ev);
         }
-        if (portal) finishAllGroups(pl, false, true);
+        auto portalObj = real->m_lastActivatedPortal;
+        if (portalObj && portalObj != m_prevPortal) {
+            auto type = portalObj->m_objectType;
+            switch (type) {
+                case GameObjectType::ShipPortal: case GameObjectType::CubePortal: case GameObjectType::BallPortal:
+                case GameObjectType::UfoPortal: case GameObjectType::WavePortal: case GameObjectType::RobotPortal:
+                case GameObjectType::SpiderPortal: case GameObjectType::SwingPortal:
+                case GameObjectType::InverseGravityPortal: case GameObjectType::NormalGravityPortal:
+                case GameObjectType::GravityTogglePortal:
+                case GameObjectType::MiniSizePortal: case GameObjectType::RegularSizePortal: {
+                    PortalEvent ev;
+                    ev.tick = t;
+                    ev.obj = portalObj;
+                    ev.type = static_cast<int>(type);
+                    m_portals.push_back(ev);
+                    log::info("portal {} at tick {}", static_cast<int>(type), t);
+                } break;
+                case GameObjectType::InverseMirrorPortal: case GameObjectType::NormalMirrorPortal:
+                    break; // only flips the screen
+                default:
+                    unsupported = true; // dual / teleport / other
+            }
+        }
+        m_prevPortal = portalObj;
+        // a mode change we couldn't explain (e.g. a portal we didn't see): stop to be safe
+        if (cur.modeKey != m_prevReal.modeKey && (m_portals.empty() || m_portals.back().tick != t)) unsupported = true;
+        if (unsupported) finishAllGroups(pl, false, true);
     }
     m_boostThisTick = false;
 

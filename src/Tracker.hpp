@@ -127,7 +127,8 @@ private:
         int converged = 0;
         int deathTick = -1;
         GameObject* killer = nullptr;
-        struct Hit { GameObject* obj; int tick; float depth; };
+        struct Hit { GameObject* obj; int tick; float depth; float x; float y; };
+        float deathX = 0.f, deathY = 0.f;
         std::vector<Hit> hits; // possible deaths, confirmed a few steps later
         std::vector<Event> events;
         std::vector<GameObject*> usedBoosts;
@@ -152,6 +153,7 @@ private:
         bool done = false;
         std::unordered_map<GameObject*, float> baselineDepth; // how deep the copy of your exact run went into things
         int inputsAhead = 0;
+        bool continuous = false; // ship / wave / swing: you steer all the time
         float baseMaxDx = 0.f, baseMaxDy = 0.f; // how far the copy of your exact run drifted (diagnostics)
         std::string baseHitNames;
         int startTick = 0;
@@ -224,6 +226,16 @@ private:
     int liveGhostCount() const;
     std::vector<double> buildOffsets() const;
     void drawDebug(PlayLayer* pl);
+    struct PortalEvent {
+        int tick = 0;
+        GameObject* obj = nullptr;
+        int type = 0;          // GameObjectType
+        float speed = 0.f;     // for speed changes (obj == nullptr)
+    };
+    void applyPortals(Ghost& g, int tick);
+    void applyPortal(PlayerObject* p, PortalEvent const& ev);
+    std::vector<PortalEvent> m_portals;
+    GameObject* m_prevPortal = nullptr;
     void spawnLiveLabel(PlayLayer* pl, size_t idx, float x, float y);
     void finishLiveLabel(size_t idx);
     void clearLiveLabels();
