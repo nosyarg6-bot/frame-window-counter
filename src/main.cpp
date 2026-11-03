@@ -263,7 +263,7 @@ class $modify(FWPlayLayer, PlayLayer) {
         PlayLayer::destroyPlayer(player, object);
         // noclip mods stop the death, so check that it really happened
         if (player == m_player1 && m_player1 && m_player1->m_isDead && tr.hasRunInProgress()) {
-            tr.finishRun(this, false);
+            tr.finishRun(this, false, true);
             if (Mod::get()->getSettingValue<bool>("report-on-death") && !tr.history().empty()) {
                 if (auto popup = fw::ReportPopup::create()) popup->show();
             }

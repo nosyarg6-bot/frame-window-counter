@@ -56,6 +56,7 @@ struct RunRecord {
     int micRate = 48000;
     uint64_t micStart = 0;
     double secondsPerTick = 1.0 / 240.0;
+    bool died = false;           // ended by a death (not a restart / quit)
     double musicStartSec = -1.0; // song position at tick 0 (works with start positions)
     float startX = 0.f;
     std::string levelName;
@@ -78,7 +79,7 @@ public:
     void beginLevel(PlayLayer* pl);
     void endLevel(PlayLayer* pl);
     void startRun(PlayLayer* pl);
-    void finishRun(PlayLayer* pl, bool completed);
+    void finishRun(PlayLayer* pl, bool completed, bool died = false);
 
     // called around every physics step
     void onTickStart(PlayLayer* pl);

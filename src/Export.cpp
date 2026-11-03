@@ -86,40 +86,51 @@ static void notify(std::string const& text, NotificationIcon icon, float time = 
     Notification::create(text, icon, time)->show();
 }
 
-void Exporter::saveLastAttempt() {
-    auto const& hist = Tracker::get().history();
-    for (auto const& run : hist) {
-        if (run.replay && !run.replay->empty()) {
-            exportRun(run);
-            return;
-        }
-        break;
+// attempts that really ended (death or level complete), newest first - an
+// attempt you just started, or one cut off by a restart, doesn't count
+static std::vector<RunRecord const*> endedAttempts() {
+    std::vector<RunRecord const*> out;
+    for (auto const& run : Tracker::get().history()) {
+        if (!(run.died || run.completed)) continue;
+        if (!run.replay || run.replay->empty()) continue;
+        out.push_back(&run);
     }
-    notify("No recorded attempt to save yet", NotificationIcon::Warning);
+    return out;
+}
+
+void Exporter::saveLastAttempt() {
+    auto runs = endedAttempts();
+    if (runs.empty()) {
+        notify("No finished attempt to save yet", NotificationIcon::Warning);
+        return;
+    }
+    exportRun(*runs[0]);
 }
 
 void Exporter::saveLastTwoAttempts() {
-    auto const& hist = Tracker::get().history();
-    if (hist.size() < 2 || !hist[0].replay || !hist[1].replay || hist[0].replay->empty() || hist[1].replay->empty()) {
-        if (!hist.empty()) {
+    auto runs = endedAttempts();
+    if (runs.size() < 2) {
+        if (!runs.empty()) {
             saveLastAttempt();
             return;
         }
-        notify("Need two recorded attempts", NotificationIcon::Warning);
+        notify("Need two finished attempts", NotificationIcon::Warning);
         return;
     }
     double tail = std::clamp(Mod::get()->getSettingValue<double>("prev-tail"), 0.25, 30.0);
+    auto const& last = *runs[0];
+    auto const& before = *runs[1];
     std::vector<ClipSegment> segs;
     ClipSegment prev;
-    prev.run = hist[1];
-    prev.to = static_cast<int>(hist[1].replay->size());
-    prev.from = std::max(0, prev.to - static_cast<int>(tail / hist[1].secondsPerTick));
+    prev.run = before;
+    prev.to = static_cast<int>(before.replay->size());
+    prev.from = std::max(0, prev.to - static_cast<int>(tail / before.secondsPerTick));
     segs.push_back(prev);
-    ClipSegment last;
-    last.run = hist[0];
-    last.to = static_cast<int>(hist[0].replay->size());
-    segs.push_back(last);
-    start(std::move(segs), fmt::format("{} attempts {}-{}", hist[0].levelName, hist[1].attempt, hist[0].attempt));
+    ClipSegment seg;
+    seg.run = last;
+    seg.to = static_cast<int>(last.replay->size());
+    segs.push_back(seg);
+    start(std::move(segs), fmt::format("{} attempts {}-{}", last.levelName, before.attempt, last.attempt));
 }
 
 void Exporter::exportRun(RunRecord const& run) {

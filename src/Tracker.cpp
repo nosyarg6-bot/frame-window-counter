@@ -529,7 +529,7 @@ void Tracker::stopForReplay(PlayLayer* pl) {
     bump();
 }
 
-void Tracker::finishRun(PlayLayer* pl, bool completed) {
+void Tracker::finishRun(PlayLayer* pl, bool completed, bool died) {
     if (!m_running) return;
     finishAllGroups(pl, !completed, true);
     m_pending.clear();
@@ -539,6 +539,7 @@ void Tracker::finishRun(PlayLayer* pl, bool completed) {
 
     m_running = false;
     m_current.finished = true;
+    m_current.died = died;
     m_current.secondsPerTick = m_fpt / 240.0;
     if (Mic::get().running()) {
         Mic::get().update();
