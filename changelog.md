@@ -1,3 +1,11 @@
+# v1.7.0
+- Accuracy: whole-frame shifts now decide each window, and fractional shifts only refine the last frame. They're ignored if they disagree. This fixes UFO clicks that always read 0.50 and ship clicks/releases that were always cut short on one side.
+- Windows at least as big as the max tested now show as "free" instead of 20-30.
+- The report no longer pops up when you beat a level; there's a "Frame Windows" button on the level complete screen instead.
+- Save clips as MP4 (needs the FFmpeg API mod): "Save MP4" in the report, or keybinds for "last attempt" and "last attempt + end of the one before" (default F7 / F8, changeable in settings).
+- Microphone recording: pick a mic, and replays/clips include your click sounds. Separate volumes for game sound and input (mic) sound in clips.
+- Setting to turn off the frame window pop-ups in replays and clips.
+
 # v1.6.0
 - Big accuracy fix: the mod compared positions using a field the game only updates once in a while, so every test player looked like it was drifting 50-250 units away from your real run (seen in your logs). It now uses the real position. This is what broke ship windows, made results show up late, and gave open-space clicks numbers.
 - Test players never report a "death" to the game anymore (only the mod's own spike/saw/block check), so MegaHack's hitboxes on death no longer pop up after every click.

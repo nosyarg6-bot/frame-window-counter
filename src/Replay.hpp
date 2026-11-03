@@ -2,6 +2,7 @@
 
 #include <Geode/Geode.hpp>
 #include "Tracker.hpp"
+#include "Mic.hpp"
 
 class PlayLayer;
 class Slider;
@@ -26,6 +27,8 @@ public:
     bool injecting() const { return m_injecting; }
     bool frozen() const { return m_active && m_frozen; }
     bool restarting() const { return m_restarting; }
+    bool exporting() const { return m_exporting; }
+    void setExporting(bool e) { m_exporting = e; }
 
     void begin(PlayLayer* pl);   // level reset while pending
     void onRestarted();          // level reset caused by seeking backwards
@@ -60,6 +63,8 @@ private:
     size_t m_nextInput = 0;
     int m_revision = 0;
     ReplayBar* m_bar = nullptr;
+    bool m_exporting = false;
+    MicPlayer m_mic;
 };
 
 // Controls shown at the bottom of the screen during a replay.

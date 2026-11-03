@@ -29,6 +29,14 @@ The mod depends on `geode.node-ids` (used to put the button in the pause menu). 
 - **Report**: pause, then press the green stats button on the right. **Watch Replay** restarts the level and plays one of your last 5 runs back, showing each input's window above the player as it happens. During a replay: **left / right arrow** = 5 seconds back / forward, the **scroll bar** at the bottom seeks anywhere, **Exit** ends it, and it stays on the last frame when the run ends. **Overlay Settings** turns the overlay on or off and (when on) sets its position, size and background opacity; it also has *Show frame windows in the level* and *Hide test player hitboxes near obstacles*. It lists every input of the current and previous runs (arrows switch between runs) with a count per difficulty.
 - **Settings** (Geode mod settings): rows shown, scale, opacity, early/late display, max window, precision, check ahead, max test players, open report on death, history size.
 
+## Clips (MP4)
+
+Needs the **FFmpeg API** mod (Geode mod browser).
+- **Save MP4** in the report saves the selected run.
+- Keybinds (mod settings): **Save Last Attempt** (F7) and **Save Last Attempt + End Of The One Before** (F8). *Seconds Of The Attempt Before* sets how much of the earlier attempt is included.
+- Clips are rendered offline from the replay, so the game freezes for a moment while saving. They go to the mod's `clips` folder (mod settings > Clips Folder > Open).
+- Audio: the level's music at *Clip: Game Sound Volume*, plus your microphone at *Clip: Input Sound Volume* if *Record Microphone* is on (*Choose Microphone* picks the device). Sound effects other than the music aren't included.
+
 ## How the window is calculated
 
 It works like testing a macro: take one input, move it earlier or later, keep **every other input exactly where it was**, and see if you still make it through.

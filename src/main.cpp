@@ -1,4 +1,5 @@
 #include <Geode/Geode.hpp>
+#include <Geode/utils/file.hpp>
 #include <Geode/modify/EffectGameObject.hpp>
 #include <Geode/modify/GameObject.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
@@ -7,9 +8,12 @@
 #include <Geode/modify/PlayerObject.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 
+#include <Geode/binding/ButtonSprite.hpp>
 #include "Hud.hpp"
 #include "ReportPopup.hpp"
 #include "Replay.hpp"
+#include "Export.hpp"
+#include "MicPopup.hpp"
 #include "Tracker.hpp"
 
 using namespace geode::prelude;
@@ -40,7 +44,12 @@ class $modify(FWBaseGameLayer, GJBaseGameLayer) {
 
     // a finished replay stays frozen on its last frame
     void update(float dt) {
-        if (fw::Replay::get().frozen() && playLayerFor(this)) return;
+        if (playLayerFor(this)) {
+            auto& ex = fw::Exporter::get();
+            // while saving a clip, only the exporter moves the game forward
+            if (ex.active() && !ex.driving()) return;
+            if (!ex.active() && fw::Replay::get().frozen()) return;
+        }
         GJBaseGameLayer::update(dt);
     }
 
@@ -269,18 +278,6 @@ class $modify(FWPlayLayer, PlayLayer) {
     void levelComplete() {
         Tracker::get().finishRun(this, true);
         PlayLayer::levelComplete();
-        // open the report by itself, separate from the level complete screen
-        // (works even if another mod hides that screen)
-        if (Mod::get()->getSettingValue<bool>("report-on-complete") && !fw::Replay::get().active()) {
-            this->runAction(CCSequence::create(
-                CCDelayTime::create(1.3f),
-                CallFuncExt::create([]() {
-                    if (!PlayLayer::get()) return;
-                    if (auto popup = fw::ReportPopup::create()) popup->show();
-                }),
-                nullptr
-            ));
-        }
     }
 
     void onQuit() {
@@ -349,20 +346,43 @@ class $modify(FWKeyboard, cocos2d::CCKeyboardDispatcher) {
 class $modify(FWEndLevelLayer, EndLevelLayer) {
     void customSetup() {
         EndLevelLayer::customSetup();
-        auto spr = CircleButtonSprite::createWithSpriteFrameName(
-            "GJ_statsBtn_001.png", 0.9f, CircleBaseColor::Green, CircleBaseSize::Small
-        );
+        auto spr = ButtonSprite::create("Frame Windows", "bigFont.fnt", "GJ_button_01.png", 0.6f);
         if (!spr) return;
         auto btn = CCMenuItemExt::createSpriteExtra(spr, [](CCMenuItemSpriteExtra*) {
             if (auto popup = fw::ReportPopup::create()) popup->show();
         });
+        btn->setScale(0.6f);
+        btn->m_baseScale = 0.6f;
         btn->setID("frame-window-report-btn"_spr);
         auto menu = CCMenu::create();
         menu->setID("frame-window-menu"_spr);
         menu->addChild(btn);
         auto win = CCDirector::get()->getWinSize();
-        menu->setPosition({win.width * 0.5f + 165.f, win.height * 0.5f + 95.f});
-        if (m_mainLayer) m_mainLayer->addChild(menu, 10);
-        else this->addChild(menu, 10);
+        // top of the level complete panel
+        menu->setPosition({win.width * 0.5f, win.height * 0.5f + 128.f});
+        CCNode* parent = m_mainLayer ? static_cast<CCNode*>(m_mainLayer) : static_cast<CCNode*>(this);
+        parent->addChild(menu, 100);
     }
 };
+
+// ---------------------------------------------------------------------------
+// keybinds and setting buttons
+
+$on_mod(Loaded) {
+    listenForKeybindSettingPresses("clip-key-last", [](Keybind const&, bool down, bool repeat, double) {
+        if (down && !repeat && PlayLayer::get() && !fw::Exporter::get().active()) fw::Exporter::get().saveLastAttempt();
+        return false;
+    });
+    listenForKeybindSettingPresses("clip-key-last-two", [](Keybind const&, bool down, bool repeat, double) {
+        if (down && !repeat && PlayLayer::get() && !fw::Exporter::get().active()) fw::Exporter::get().saveLastTwoAttempts();
+        return false;
+    });
+    ButtonSettingPressedEventV3(Mod::get(), "mic-pick").listen([](std::string_view) {
+        if (auto popup = fw::MicPopup::create()) popup->show();
+        return false;
+    }).leak();
+    ButtonSettingPressedEventV3(Mod::get(), "open-clips").listen([](std::string_view) {
+        utils::file::openFolder(fw::Exporter::clipsFolder());
+        return false;
+    }).leak();
+}

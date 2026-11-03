@@ -2,8 +2,10 @@
 #include "Hud.hpp"
 #include "Replay.hpp"
 #include "OverlayPopup.hpp"
+#include "Export.hpp"
 
 #include <Geode/binding/PauseLayer.hpp>
+#include <Geode/binding/EndLevelLayer.hpp>
 #include <Geode/binding/PlayLayer.hpp>
 #include <Geode/binding/CCMenuItemToggler.hpp>
 
@@ -137,7 +139,13 @@ bool ReportPopup::init() {
             Replay::get().request(m_runs[m_index]);
             if (!Replay::get().pending()) return;
             this->onClose(nullptr);
-            if (auto pause = CCScene::get()->getChildByType<PauseLayer>(0)) {
+            auto scene = CCScene::get();
+            EndLevelLayer* endLayer = scene ? scene->getChildByType<EndLevelLayer>(0) : nullptr;
+            if (!endLayer) if (auto pl = PlayLayer::get()) endLayer = pl->getChildByType<EndLevelLayer>(0);
+            if (endLayer) {
+                endLayer->onReplay(nullptr); // from the level complete screen
+            }
+            else if (auto pause = scene ? scene->getChildByType<PauseLayer>(0) : nullptr) {
                 pause->onRestartFull(nullptr);
             }
             else if (auto pl = PlayLayer::get()) {
@@ -149,6 +157,21 @@ bool ReportPopup::init() {
     m_replayBtn->m_baseScale = 0.7f;
     m_replayBtn->setPosition({kPopupW - 85.f, 20.f});
     menu->addChild(m_replayBtn);
+
+    m_exportBtn = CCMenuItemExt::createSpriteExtra(
+        ButtonSprite::create("Save MP4", "bigFont.fnt", "GJ_button_02.png", 0.6f),
+        [this](CCMenuItemSpriteExtra*) {
+            if (m_index < 0 || m_index >= static_cast<int>(m_runs.size())) return;
+            auto run = m_runs[m_index];
+            this->onClose(nullptr);
+            if (auto pause = CCScene::get()->getChildByType<PauseLayer>(0)) pause->onResume(nullptr);
+            Exporter::get().exportRun(run);
+        }
+    );
+    m_exportBtn->setScale(0.7f);
+    m_exportBtn->m_baseScale = 0.7f;
+    m_exportBtn->setPosition({kPopupW * 0.5f + 40.f, 20.f});
+    menu->addChild(m_exportBtn);
 
     m_replayNote = label("", "chatFont.fnt", 0.4f, {170, 170, 170});
     m_replayNote->setPosition({kPopupW - 85.f, 6.f});
@@ -172,6 +195,7 @@ void ReportPopup::showRun(int index) {
         m_prevBtn->setVisible(false);
         m_nextBtn->setVisible(false);
         m_replayBtn->setEnabled(false);
+        m_exportBtn->setVisible(false);
         return;
     }
     m_index = std::clamp(index, 0, static_cast<int>(m_runs.size()) - 1);
@@ -181,6 +205,8 @@ void ReportPopup::showRun(int index) {
     auto const& run = m_runs[m_index];
     bool canReplay = run.finished && run.replay && !run.replay->empty() && PlayLayer::get();
     m_replayBtn->setEnabled(canReplay);
+    m_exportBtn->setEnabled(canReplay);
+    m_exportBtn->setVisible(canReplay);
     if (auto spr = typeinfo_cast<ButtonSprite*>(m_replayBtn->getNormalImage())) {
         spr->setColor(canReplay ? ccColor3B{255, 255, 255} : ccColor3B{110, 110, 110});
         spr->setOpacity(canReplay ? 255 : 150);

@@ -8,12 +8,16 @@
 	},
 	"id": "nosyarg.frame-window-counter",
 	"name": "Frame Window Counter",
-	"version": "v1.6.0",
+	"version": "v1.7.0",
 	"developer": "nosyarg",
 	"description": "Automatically shows how many 240 FPS frames of leeway every click and release had.",
 	"tags": ["gameplay", "utility", "interface"],
 	"dependencies": {
-		"geode.node-ids": ">=v1.23.3"
+		"geode.node-ids": ">=v1.23.3",
+		"eclipse.ffmpeg-api": {
+			"version": ">=v2.0.0",
+			"required": false
+		}
 	},
 	"settings": {
 		"hud-title": {
@@ -123,6 +127,106 @@
 			"max": 30.0,
 			"control": { "slider": true, "slider-step": 1.0 }
 		},
+		"clips-title": {
+			"type": "title",
+			"name": "Replays & Clips"
+		},
+		"replay-labels": {
+			"type": "bool",
+			"name": "Frame Windows In Replays",
+			"description": "Pop up each click's frame window above the player in replays and saved clips.",
+			"default": true
+		},
+		"mic-enabled": {
+			"type": "bool",
+			"name": "Record Microphone",
+			"description": "Record your microphone while you play, so replays and clips include your click sounds.",
+			"default": false
+		},
+		"mic-pick": {
+			"type": "button",
+			"name": "Choose Microphone",
+			"description": "Pick which microphone to record.",
+			"buttons": { "pick": "Choose" }
+		},
+		"mic-device": {
+			"type": "string",
+			"name": "Microphone Name",
+			"description": "Set by Choose Microphone. Empty = the first one found.",
+			"default": ""
+		},
+		"replay-mic": {
+			"type": "bool",
+			"name": "Play Microphone In Replays",
+			"default": true
+		},
+		"clip-game-volume": {
+			"type": "float",
+			"name": "Clip: Game Sound Volume",
+			"description": "Volume of the level's music in saved clips.",
+			"default": 1.0,
+			"min": 0.0,
+			"max": 2.0,
+			"control": { "slider": true, "slider-step": 0.05 }
+		},
+		"clip-mic-volume": {
+			"type": "float",
+			"name": "Clip: Input Sound Volume",
+			"description": "Volume of your microphone (click sounds) in saved clips and replays.",
+			"default": 1.0,
+			"min": 0.0,
+			"max": 3.0,
+			"control": { "slider": true, "slider-step": 0.05 }
+		},
+		"clip-key-last": {
+			"type": "keybind",
+			"name": "Save Last Attempt",
+			"description": "Saves your last attempt as an MP4 clip.",
+			"default": "F7",
+			"category": "gameplay"
+		},
+		"clip-key-last-two": {
+			"type": "keybind",
+			"name": "Save Last Attempt + End Of The One Before",
+			"description": "Saves the end of the attempt before your last one, followed by your last attempt.",
+			"default": "F8",
+			"category": "gameplay"
+		},
+		"prev-tail": {
+			"type": "float",
+			"name": "Seconds Of The Attempt Before",
+			"description": "How much of the end of the previous attempt the second keybind includes.",
+			"default": 2.0,
+			"min": 0.5,
+			"max": 15.0,
+			"control": { "slider": true, "slider-step": 0.5 }
+		},
+		"clip-height": {
+			"type": "int",
+			"name": "Clip Resolution (height)",
+			"default": 720,
+			"min": 360,
+			"max": 2160
+		},
+		"clip-fps": {
+			"type": "int",
+			"name": "Clip FPS",
+			"description": "30, 60, 120 or 240.",
+			"default": 60,
+			"min": 30,
+			"max": 240
+		},
+		"clip-codec": {
+			"type": "string",
+			"name": "Clip Codec",
+			"description": "Leave empty to pick automatically (libx264, or your GPU's encoder).",
+			"default": ""
+		},
+		"open-clips": {
+			"type": "button",
+			"name": "Clips Folder",
+			"buttons": { "open": "Open" }
+		},
 		"report-title": {
 			"type": "title",
 			"name": "Run Report"
@@ -132,12 +236,6 @@
 			"name": "Open Report On Death",
 			"description": "Automatically open the full run report every time you die. Off by default because it gets in the way of quick respawns. You can always open it from the pause menu.",
 			"default": false
-		},
-		"report-on-complete": {
-			"type": "bool",
-			"name": "Open Report On Level Complete",
-			"description": "Open the frame window report by itself when you beat a level (works even if another mod hides the level complete screen).",
-			"default": true
 		},
 		"history-size": {
 			"type": "int",

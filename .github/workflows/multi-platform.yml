@@ -58,6 +58,15 @@ jobs:
           name: Build Output
           path: ${{ steps.build.outputs.build-output }}
 
+      - name: Fetch FFmpeg API (needed for saving clips)
+        run: |
+          V=$(curl -fsSL "https://api.geode-sdk.org/v1/mods/eclipse.ffmpeg-api/versions/latest?platforms=win&gd=2.2081" | jq -r '.payload.version' || true)
+          echo "FFmpeg API version for Windows: $V"
+          if [ -n "$V" ] && [ "$V" != "null" ]; then
+            curl -fsSL "https://api.geode-sdk.org/v1/mods/eclipse.ffmpeg-api/versions/$V/download" -o "${{ steps.build.outputs.build-output }}/eclipse.ffmpeg-api.geode" || true
+          fi
+          ls -la "${{ steps.build.outputs.build-output }}"
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:

@@ -1,6 +1,7 @@
 #include "Tracker.hpp"
 #include "PlayerFields.hpp"
 #include "Replay.hpp"
+#include "Mic.hpp"
 
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/GJGameLevel.hpp>
@@ -92,6 +93,14 @@ std::vector<double> Tracker::buildOffsets() const {
     }
     if (out.empty() || out.back() < mf - 1e-9) out.push_back(mf);
     return out;
+}
+
+// a shift by a whole number of physics steps keeps the input at the same point
+// inside its step as your real one, so it runs through exactly the same code as
+// the copy of your real run. Fractional shifts split a step and are only used to
+// refine the last frame.
+static bool isWholeStep(double offTicks) {
+    return std::abs(offTicks - std::round(offTicks)) < 1e-6;
 }
 
 static int modeKeyOf(PlayerObject* p) {
@@ -449,6 +458,7 @@ Tracker::RealState Tracker::readState(PlayerObject* p) const {
 
 void Tracker::beginLevel(PlayLayer*) {
     destroyPool();
+    Mic::get().start();
     m_current = RunRecord{};
     m_running = false;
     m_showLastRun = false;
@@ -460,6 +470,7 @@ void Tracker::endLevel(PlayLayer* pl) {
     if (m_running) finishRun(pl, false);
     m_running = false;
     destroyPool();
+    Mic::get().stop();
     bump();
 }
 
@@ -474,6 +485,9 @@ void Tracker::startRun(PlayLayer* pl) {
     m_current.replay->reserve(240 * 30);
     if (pl->m_player1) m_current.startX = pl->m_player1->getPositionX();
     m_realDepth.clear();
+    Mic::get().update();
+    m_current.micStart = Mic::get().position();
+    m_current.micRate = Mic::get().rate();
     if (pl->m_level) m_current.levelName = std::string(pl->m_level->m_levelName);
     m_current.attempt = pl->m_attempts;
     m_current.practice = pl->m_isPracticeMode;
@@ -519,13 +533,22 @@ void Tracker::finishRun(PlayLayer* pl, bool completed) {
 
     m_running = false;
     m_current.finished = true;
+    m_current.secondsPerTick = m_fpt / 240.0;
+    if (Mic::get().running()) {
+        Mic::get().update();
+        m_current.mic = Mic::get().extract(m_current.micStart, Mic::get().position());
+        m_current.micRate = Mic::get().rate();
+    }
     m_current.completed = completed;
     m_current.endPercent = completed ? 100.f : (pl ? pl->getCurrentPercent() : 0.f);
     if (!m_current.inputs.empty()) {
         m_history.push_front(m_current);
         size_t maxRuns = static_cast<size_t>(std::max<int64_t>(1, Mod::get()->getSettingValue<int64_t>("history-size")));
         while (m_history.size() > maxRuns) m_history.pop_back();
-        for (size_t i = 5; i < m_history.size(); ++i) m_history[i].replay.reset();
+        for (size_t i = 5; i < m_history.size(); ++i) {
+            m_history[i].replay.reset();
+            m_history[i].mic.reset();
+        }
         m_showLastRun = true;
     }
     if (m_drawNode) m_drawNode->clear();
@@ -810,7 +833,7 @@ void Tracker::createGroup(PlayLayer* pl, size_t idx, int t) {
             g.killer = h.obj;
             g.deathTick = h.tick;
             releaseObj(g);
-            earlyDead = true;
+            if (isWholeStep(g.offTicks)) earlyDead = true;
             break;
         }
     }
@@ -827,7 +850,7 @@ void Tracker::createGroup(PlayLayer* pl, size_t idx, int t) {
 void Tracker::spawnLateGhosts(PlayLayer* pl, Group& grp, int t) {
     bool sideDead = false;
     for (auto& g : grp.late) {
-        if (g.status == GStatus::Dead || g.status == GStatus::Bounded) sideDead = true;
+        if ((g.status == GStatus::Dead && isWholeStep(g.offTicks)) || g.status == GStatus::Bounded) sideDead = true;
         if (g.status != GStatus::NotSpawned) continue;
         if (sideDead) {
             g.status = GStatus::Pruned;
@@ -956,7 +979,7 @@ void Tracker::evaluateGroup(PlayLayer* pl, Group& grp, RealState const& cur, int
                 g.status = GStatus::Pruned;
                 releaseObj(g);
             }
-            if (g.status == GStatus::Dead || g.status == GStatus::Bounded) dead = true;
+            if ((g.status == GStatus::Dead && isWholeStep(g.offTicks)) || g.status == GStatus::Bounded) dead = true;
         }
     }
 
@@ -992,47 +1015,80 @@ void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interr
             bool died = false;
             bool untested = false;
         };
+        auto settle = [&](Ghost& g) {
+            for (auto const& h : g.hits) {
+                if (isGenuine(h, grp)) {
+                    if (!g.killer) g.killer = h.obj;
+                    if (g.status == GStatus::Alive) g.status = GStatus::Dead;
+                }
+            }
+        };
+        auto isOk = [](Ghost const& g) { return g.status == GStatus::Alive || g.status == GStatus::Converged; };
+
         auto scan = [&](std::vector<Ghost>& side, bool isLate) {
             SideResult r;
-            int lastOk = -1;
+            for (auto& g : side) settle(g);
+
+            // 1. whole steps decide how far it reaches
+            int lastWholeOk = -1, firstWholeFail = -1;
+            bool anyWhole = false;
             for (size_t k = 0; k < side.size(); ++k) {
-                auto& g = side[k];
-                bool genuineHit = false;
-                for (auto const& h : g.hits) {
-                    if (isGenuine(h, grp)) {
-                        genuineHit = true;
-                        if (!g.killer) g.killer = h.obj;
-                    }
-                }
-                if (genuineHit && g.status == GStatus::Alive) g.status = GStatus::Dead;
-                bool ok = g.status == GStatus::Alive || g.status == GStatus::Converged;
-                if (ok) {
-                    lastOk = static_cast<int>(k);
-                    if (k + 1 == side.size()) r.capped = true;
-                    continue;
-                }
-                double inner = lastOk >= 0 ? grp.offFrames[lastOk] : 0.0;
-                if (g.status == GStatus::Dead) {
-                    r.died = true;
-                    r.killer = g.killer;
-                    r.edge = (inner + grp.offFrames[k]) * 0.5;
-                }
-                else if (g.status == GStatus::Bounded) {
-                    r.spacing = true;
-                    double gap = isLate ? (grp.nextRelevant - grp.T0) : (grp.T0 - grp.prevTime);
-                    double gapFrames = gap * grp.fpt;
-                    r.edge = std::clamp(gapFrames, inner, grp.offFrames[k]);
-                }
-                else {
-                    // not tested (run ended / portal): only count what was confirmed
-                    r.edge = inner;
-                    r.untested = true;
-                    truncated = true;
-                }
+                if (!isWholeStep(side[k].offTicks)) continue;
+                anyWhole = true;
+                if (isOk(side[k])) { lastWholeOk = static_cast<int>(k); continue; }
+                firstWholeFail = static_cast<int>(k);
+                break;
+            }
+            // 2. fractional shifts only between the last working and the first failing whole step
+            int lo = anyWhole ? lastWholeOk + 1 : 0;
+            int hi = anyWhole ? (firstWholeFail >= 0 ? firstWholeFail : static_cast<int>(side.size())) : static_cast<int>(side.size());
+            int lastOk = lastWholeOk;
+            int failAt = firstWholeFail;
+            for (int k = lo; k < hi; ++k) {
+                if (isOk(side[k])) { lastOk = k; continue; }
+                failAt = k;
+                break;
+            }
+            if (failAt < 0) {
+                r.capped = true;
+                r.edge = grp.offFrames.empty() ? 0.0 : grp.offFrames.back();
                 return r;
             }
-            r.edge = grp.offFrames.empty() ? 0.0 : grp.offFrames.back();
+            auto& g = side[failAt];
+            double inner = lastOk >= 0 ? grp.offFrames[lastOk] : 0.0;
+            if (g.status == GStatus::Dead) {
+                r.died = true;
+                r.killer = g.killer;
+                r.edge = (inner + grp.offFrames[failAt]) * 0.5;
+            }
+            else if (g.status == GStatus::Bounded) {
+                r.spacing = true;
+                double gap = isLate ? (grp.nextRelevant - grp.T0) : (grp.T0 - grp.prevTime);
+                r.edge = std::clamp(gap * grp.fpt, inner, grp.offFrames[failAt]);
+            }
+            else {
+                // not tested (run ended / portal): only count what was confirmed
+                r.edge = inner;
+                r.untested = true;
+                truncated = true;
+            }
             return r;
+        };
+        auto statusLine = [&](std::vector<Ghost> const& side) {
+            std::string out;
+            for (size_t k = 0; k < side.size() && k < 24; ++k) {
+                char c = '?';
+                switch (side[k].status) {
+                    case GStatus::Alive: c = 'a'; break;
+                    case GStatus::Converged: c = 'c'; break;
+                    case GStatus::Dead: c = 'D'; break;
+                    case GStatus::Bounded: c = 'b'; break;
+                    case GStatus::Pruned: c = '.'; break;
+                    case GStatus::NotSpawned: c = '_'; break;
+                }
+                out += c;
+            }
+            return out;
         };
         auto e = scan(grp.early, false);
         auto l = scan(grp.late, true);
@@ -1053,6 +1109,11 @@ void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interr
             rec.cappedLate = l.capped;
         }
         rec.windowFrames = rec.earlyFrames + rec.lateFrames;
+        // a window at least as big as the max tested is free (e.g. limited on one side only)
+        if (rec.windowFrames >= maxFrames() - 1e-6) {
+            rec.cappedEarly = true;
+            rec.cappedLate = true;
+        }
         rec.truncated = truncated;
         rec.approx = grp.baselineMismatch;
         forEachGhost(grp, [&](Ghost& g) { if (g.approxBoost && g.status != GStatus::Dead) rec.approx = true; });
@@ -1077,11 +1138,11 @@ void Tracker::finishGroup(PlayLayer* pl, Group& grp, bool truncated, bool interr
             }
         }
         rec.state = EvalState::Done;
-        log::info("#{} {} at {:.1f}%: window {:.2f} (early {:.2f}{}{}, late {:.2f}{}{}) obstacle '{}' approx={} drift dx={:.2f} dy={:.2f} basehits=[{}] mode={} fpt={:.3f} shifts={}",
+        log::info("#{} {} at {:.1f}%: window {:.2f} (early {:.2f}{}{}, late {:.2f}{}{}) obstacle '{}' approx={} drift dx={:.2f} dy={:.2f} basehits=[{}] mode={} fpt={:.3f} shifts={} E[{}] L[{}]",
             rec.number, rec.press ? "click" : "release", rec.percent, rec.windowFrames,
             e.edge, e.capped ? " max" : "", e.spacing ? " spacing" : "", l.edge, l.capped ? " max" : "", l.spacing ? " spacing" : "",
             rec.obstacle, rec.approx, grp.baseMaxDx, grp.baseMaxDy, grp.baseHitNames,
-            pl && pl->m_player1 ? modeKeyOf(pl->m_player1) : -1, grp.fpt, grp.offFrames.size());
+            pl && pl->m_player1 ? modeKeyOf(pl->m_player1) : -1, grp.fpt, grp.offFrames.size(), statusLine(grp.early), statusLine(grp.late));
     }
 
     forEachGhost(grp, [&](Ghost& g) { releaseObj(g); });
@@ -1205,6 +1266,7 @@ void Tracker::drawDebug(PlayLayer* pl) {
 }
 
 void Tracker::onTickStart(PlayLayer* pl) {
+    Mic::get().update();
     if (!m_running || !pl) return;
     auto real = pl->m_player1;
     if (!real || real->m_isDead) return;

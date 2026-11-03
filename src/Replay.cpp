@@ -62,7 +62,11 @@ void Replay::begin(PlayLayer* pl) {
     m_frozen = false;
     m_tick = 0;
     m_nextInput = 0;
-    if (!m_bar) {
+    if (!m_exporting && Mod::get()->getSettingValue<bool>("replay-mic") && m_run.mic) {
+        m_mic.play(m_run.mic, m_run.micRate, 0.0,
+                   static_cast<float>(Mod::get()->getSettingValue<double>("clip-mic-volume")));
+    }
+    if (!m_bar && !m_exporting) {
         m_bar = ReplayBar::create();
         if (m_bar) {
             m_bar->retain();
@@ -76,6 +80,7 @@ void Replay::onRestarted() {
     m_frozen = false;
     m_tick = 0;
     m_nextInput = 0;
+    m_mic.seek(0.0);
     ++m_revision;
 }
 
@@ -85,6 +90,7 @@ void Replay::stop() {
     m_injecting = false;
     m_frozen = false;
     m_fastForward = false;
+    m_mic.stop();
     if (m_bar) {
         m_bar->removeFromParentAndCleanup(true);
         m_bar->release();
@@ -100,6 +106,7 @@ void Replay::exitReplay() {
 
 void Replay::popLabel(PlayLayer* pl, InputRecord const& in) {
     if (!pl->m_objectLayer || !pl->m_player1) return;
+    if (!Mod::get()->getSettingValue<bool>("replay-labels")) return;
     if (in.state == EvalState::NoEffect && !Mod::get()->getSettingValue<bool>("show-ineffective")) return;
     // while fast-forwarding only show the last second before where you jump to
     if (m_fastForward && m_ffTarget - m_tick > static_cast<int>(kTicksPerSecond)) return;
@@ -151,6 +158,7 @@ void Replay::onTickEnd(PlayLayer*) {
     // stay on the last frame of the run
     if (m_tick >= totalTicks() && !m_frozen) {
         m_frozen = true;
+        m_mic.setPaused(true);
         if (auto ch = FMODAudioEngine::sharedEngine()->getActiveMusicChannel(0)) ch->setPaused(true);
         ++m_revision;
     }
@@ -195,7 +203,11 @@ void Replay::seekTo(int target) {
         pl->update(1.f / 60.f);
     }
     m_fastForward = false;
-    if (m_active) syncMusic(pl);
+    if (m_active && !m_exporting) {
+        syncMusic(pl);
+        m_mic.seek(m_tick * m_run.secondsPerTick);
+        m_mic.setPaused(m_frozen);
+    }
     ++m_revision;
 }
 

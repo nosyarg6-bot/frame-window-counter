@@ -52,6 +52,10 @@ struct ReplayFrame {
 
 struct RunRecord {
     std::shared_ptr<std::vector<ReplayFrame>> replay; // player state at the end of every step
+    std::shared_ptr<std::vector<int16_t>> mic;         // microphone audio of the attempt (if enabled)
+    int micRate = 48000;
+    uint64_t micStart = 0;
+    double secondsPerTick = 1.0 / 240.0;
     float startX = 0.f;
     std::string levelName;
     int attempt = 0;

@@ -29,6 +29,7 @@ protected:
     CCMenuItemSpriteExtra* m_prevBtn = nullptr;
     CCMenuItemSpriteExtra* m_nextBtn = nullptr;
     CCMenuItemSpriteExtra* m_replayBtn = nullptr;
+    CCMenuItemSpriteExtra* m_exportBtn = nullptr;
     cocos2d::CCLabelBMFont* m_replayNote = nullptr;
 };
 
