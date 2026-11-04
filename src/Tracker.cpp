@@ -1395,11 +1395,41 @@ void Tracker::drawDebug(PlayLayer* pl) {
     }
 }
 
+// GD only saves progress (new bests, completions) if its anti-cheat flags look
+// clean. Test players collide with damage turned off, which GD would treat like
+// noclip, so everything they do is undone on these flags afterwards.
+struct AntiCheatGuard {
+    PlayLayer* pl;
+    int unk36c8;
+    bool unk36cc, unk36cd, unk36ce, unk36cf, damageVerified, passedIntegrity, unk376d, ignoreDamage;
+    int unk3768, unk377c, unk3788, unk378c;
+    float unk3778, unk3780, unk3784;
+    int jumps, uncommittedJumps;
+    bool hasJumped;
+    explicit AntiCheatGuard(PlayLayer* p) : pl(p) {
+        unk36c8 = pl->m_unk36c8; unk36cc = pl->m_unk36cc; unk36cd = pl->m_unk36cd; unk36ce = pl->m_unk36ce; unk36cf = pl->m_unk36cf;
+        damageVerified = pl->m_damageVerified; passedIntegrity = pl->m_passedIntegrity;
+        unk3768 = pl->m_unk3768; unk376d = pl->m_unk376d; ignoreDamage = pl->m_isIgnoreDamageEnabled;
+        unk3778 = pl->m_unk3778; unk377c = pl->m_unk377c; unk3780 = pl->m_unk3780; unk3784 = pl->m_unk3784;
+        unk3788 = pl->m_unk3788; unk378c = pl->m_unk378c;
+        jumps = pl->m_jumps; uncommittedJumps = pl->m_uncommittedJumps; hasJumped = pl->m_hasJumped;
+    }
+    ~AntiCheatGuard() {
+        pl->m_unk36c8 = unk36c8; pl->m_unk36cc = unk36cc; pl->m_unk36cd = unk36cd; pl->m_unk36ce = unk36ce; pl->m_unk36cf = unk36cf;
+        pl->m_damageVerified = damageVerified; pl->m_passedIntegrity = passedIntegrity;
+        pl->m_unk3768 = unk3768; pl->m_unk376d = unk376d; pl->m_isIgnoreDamageEnabled = ignoreDamage;
+        pl->m_unk3778 = unk3778; pl->m_unk377c = unk377c; pl->m_unk3780 = unk3780; pl->m_unk3784 = unk3784;
+        pl->m_unk3788 = unk3788; pl->m_unk378c = unk378c;
+        pl->m_jumps = jumps; pl->m_uncommittedJumps = uncommittedJumps; pl->m_hasJumped = hasJumped;
+    }
+};
+
 void Tracker::onTickStart(PlayLayer* pl) {
     Mic::get().update();
     if (!m_running || !pl) return;
     auto real = pl->m_player1;
     if (!real || real->m_isDead) return;
+    AntiCheatGuard guard(pl);
 
     if (m_tick > 0) processTick(pl, m_tick - 1);
     if (!m_running) return;

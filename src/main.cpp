@@ -276,6 +276,8 @@ class $modify(FWPlayLayer, PlayLayer) {
     }
 
     void levelComplete() {
+        // a replay reaching the end must not count as beating the level again
+        if (fw::Replay::get().active() || fw::Exporter::get().active()) return;
         Tracker::get().finishRun(this, true);
         PlayLayer::levelComplete();
     }

@@ -1,3 +1,7 @@
+# v1.8.4
+- Fixed new bests not saving: the hidden test players collide with damage turned off, which tripped GD's noclip / anti-cheat flags. Those flags are now restored after every test step.
+- Replays and clip saving can no longer count as beating the level.
+
 # v1.8.3
 - Save keybinds now pick the attempts that actually ended (death or level complete). Before, an attempt you had just started (or one cut off by a restart) counted as your "last attempt", so clips showed only a fraction of a second of it.
 
