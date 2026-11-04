@@ -1,3 +1,6 @@
+# v1.8.5
+- Fixed Death Tracker not saving new bests: it hooks the same death function with the same "run first" priority, so it saw the hidden test players' deaths and flagged the attempt as noclip. The mod's hooks now run before every other mod's, and its ignore-damage flag is restored too.
+
 # v1.8.4
 - Fixed new bests not saving: the hidden test players collide with damage turned off, which tripped GD's noclip / anti-cheat flags. Those flags are now restored after every test step.
 - Replays and clip saving can no longer count as beating the level.

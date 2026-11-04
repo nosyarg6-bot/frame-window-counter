@@ -19,6 +19,9 @@
 using namespace geode::prelude;
 using fw::Tracker;
 
+// runs before hooks that use Priority::First (-3000)
+static constexpr int32_t kBeforeEveryone = Priority::First - 100000;
+
 static PlayLayer* playLayerFor(GJBaseGameLayer* layer) {
     auto pl = PlayLayer::get();
     if (pl && static_cast<GJBaseGameLayer*>(pl) == layer) return pl;
@@ -35,11 +38,11 @@ static bool isRealPlayer1(PlayerObject* p) {
 
 class $modify(FWBaseGameLayer, GJBaseGameLayer) {
     static void onModify(auto& self) {
-        (void)self.setHookPriority("GJBaseGameLayer::collisionCheckObjects", Priority::First);
-        (void)self.setHookPriority("GJBaseGameLayer::canBeActivatedByPlayer", Priority::First);
-        (void)self.setHookPriority("GJBaseGameLayer::playerTouchedRing", Priority::First);
-        (void)self.setHookPriority("GJBaseGameLayer::flipGravity", Priority::First);
-        (void)self.setHookPriority("GJBaseGameLayer::handleButton", Priority::First);
+        (void)self.setHookPriority("GJBaseGameLayer::collisionCheckObjects", kBeforeEveryone);
+        (void)self.setHookPriority("GJBaseGameLayer::canBeActivatedByPlayer", kBeforeEveryone);
+        (void)self.setHookPriority("GJBaseGameLayer::playerTouchedRing", kBeforeEveryone);
+        (void)self.setHookPriority("GJBaseGameLayer::flipGravity", kBeforeEveryone);
+        (void)self.setHookPriority("GJBaseGameLayer::handleButton", kBeforeEveryone);
     }
 
     // a finished replay stays frozen on its last frame
@@ -132,9 +135,9 @@ class $modify(FWBaseGameLayer, GJBaseGameLayer) {
 
 class $modify(FWPlayerObject, PlayerObject) {
     static void onModify(auto& self) {
-        (void)self.setHookPriority("PlayerObject::ringJump", Priority::First);
-        (void)self.setHookPriority("PlayerObject::incrementJumps", Priority::First);
-        (void)self.setHookPriority("PlayerObject::playSpiderDashEffect", Priority::First);
+        (void)self.setHookPriority("PlayerObject::ringJump", kBeforeEveryone);
+        (void)self.setHookPriority("PlayerObject::incrementJumps", kBeforeEveryone);
+        (void)self.setHookPriority("PlayerObject::playSpiderDashEffect", kBeforeEveryone);
     }
 
     bool pushButton(PlayerButton button) {
@@ -215,7 +218,12 @@ class $modify(FWPlayLayer, PlayLayer) {
     // run before MegaHack / Eclipse / other mods so a test player's "death" never
     // reaches noclip, hitboxes-on-death, death effects or attempt counters
     static void onModify(auto& self) {
-        (void)self.setHookPriority("PlayLayer::destroyPlayer", Priority::First);
+        // strictly before every other mod (Death Tracker, MegaHack... also use
+        // Priority::First): a test player's "death" must never reach them, or
+        // they flag the attempt as noclip and won't save new bests
+        if (auto res = self.setHookPriority("PlayLayer::destroyPlayer", kBeforeEveryone); res.isErr()) {
+            log::error("couldn't set destroyPlayer priority: {}", res.unwrapErr());
+        }
     }
 
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {

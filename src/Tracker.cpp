@@ -1405,8 +1405,9 @@ struct AntiCheatGuard {
     int unk3768, unk377c, unk3788, unk378c;
     float unk3778, unk3780, unk3784;
     int jumps, uncommittedJumps;
-    bool hasJumped;
+    bool hasJumped, layerIgnoreDamage;
     explicit AntiCheatGuard(PlayLayer* p) : pl(p) {
+        layerIgnoreDamage = pl->m_ignoreDamage;
         unk36c8 = pl->m_unk36c8; unk36cc = pl->m_unk36cc; unk36cd = pl->m_unk36cd; unk36ce = pl->m_unk36ce; unk36cf = pl->m_unk36cf;
         damageVerified = pl->m_damageVerified; passedIntegrity = pl->m_passedIntegrity;
         unk3768 = pl->m_unk3768; unk376d = pl->m_unk376d; ignoreDamage = pl->m_isIgnoreDamageEnabled;
@@ -1415,6 +1416,7 @@ struct AntiCheatGuard {
         jumps = pl->m_jumps; uncommittedJumps = pl->m_uncommittedJumps; hasJumped = pl->m_hasJumped;
     }
     ~AntiCheatGuard() {
+        pl->m_ignoreDamage = layerIgnoreDamage;
         pl->m_unk36c8 = unk36c8; pl->m_unk36cc = unk36cc; pl->m_unk36cd = unk36cd; pl->m_unk36ce = unk36ce; pl->m_unk36cf = unk36cf;
         pl->m_damageVerified = damageVerified; pl->m_passedIntegrity = passedIntegrity;
         pl->m_unk3768 = unk3768; pl->m_unk376d = unk376d; pl->m_isIgnoreDamageEnabled = ignoreDamage;
